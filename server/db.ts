@@ -84,6 +84,7 @@ export function migrate() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_students_owner ON students(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_inquiries_student_updated ON inquiries(student_id, updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_follow_ups_status_due ON follow_ups(status, due_at);
     CREATE INDEX IF NOT EXISTS idx_trials_scheduled_at ON trial_lessons(scheduled_at);
 

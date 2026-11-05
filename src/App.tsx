@@ -2,12 +2,13 @@ import { FormEvent, useCallback, useEffect, useRef, useState, type ReactNode } f
 import { melbourneLocalToInstant } from './shared/time';
 import { CreateTeacherForm, RescheduleForm, TeacherAssignment, TeacherSelector } from './Scheduling';
 import { CancelTrialForm, ReturningInquiryForm, StudentEditForm } from './StudentOperations';
-import type { CompleteTrialInput, DashboardDto, DuplicateStudentDto, FollowUpDto, FollowUpOutcome, InquiryDto, StudentDetailDto, TrialDto, UserDto } from './shared/contracts';
+import type { CompleteTrialInput, DashboardDto, DuplicateStudentDto, FollowUpDto, FollowUpOutcome, InquiryDto, StudentDetailDto, StudentDirectoryDto, TrialDto, UserDto } from './shared/contracts';
 
 type LoginState = { email: string; password: string };
 type Dialog = 'lead' | 'trial' | 'result' | 'followup' | 'student' | 'reschedule' | 'cancel-trial' | 'teacher' | null;
 type View = 'overview' | 'students' | 'tasks';
 type ApiRequestError = Error & { code?: string; details?: unknown };
+type ApiClient = <T>(path: string, init?: RequestInit) => Promise<T>;
 
 function useDebouncedValue<T>(value: T, delay: number) {
   const [debounced, setDebounced] = useState(value);
@@ -165,7 +166,7 @@ export function App() {
           <div className="content-grid"><section className="panel focus-panel"><div className="panel-heading"><div><p className="section-kicker">ACTION QUEUE</p><h3>优先处理</h3></div><span className="count-pill">{pending.length + trials.length} 件</span></div><div className="queue-list">{pending.length === 0 && trials.length === 0 ? <EmptyState title="今天没有待办" text="新建一条咨询，开始你的第一条跟进。" action="新建咨询" onClick={() => setDialog('lead')} /> : <>{pending.map((item) => <FollowUpCard key={item.id} item={item} onComplete={() => { setSelectedFollowUp(item); setDialog('followup'); }} onDetail={() => { setSelectedStudent(item.studentId); setDialog('student'); }} />)}{trials.map((item) => <TrialCard key={item.id} trial={item} onSchedule={() => { setSelectedTrial(item); setDialog('result'); }} onReschedule={() => { setSelectedTrial(item); setDialog('reschedule'); }} onCancel={() => { setSelectedTrial(item); setDialog('cancel-trial'); }} />)}</>}</div></section><InquiryList inquiries={inquiries} onDetail={(id) => { setSelectedStudent(id); setDialog('student'); }} onSchedule={(item) => { setSelectedTrial({ id: '', inquiryId: item.id, studentId: item.studentId, studentName: item.studentName, scheduledAt: '', status: 'scheduled', outcome: null, notes: null, teacherName: null }); setDialog('trial'); }} /></div>
           <section className="insight-banner"><div className="insight-icon">✦</div><div><strong>工作提醒</strong><p>有 {dashboard.counts.overdueFollowUps} 条逾期任务。先完成逾期跟进，再安排今天的试听。</p></div><button className="banner-action" onClick={() => setView('tasks')}>立即处理 →</button></section>
         </>}
-        {view === 'students' && <StudentDirectory inquiries={inquiries} onDetail={(id) => { setSelectedStudent(id); setDialog('student'); }} onSchedule={(item) => { setSelectedTrial({ id: '', inquiryId: item.id, studentId: item.studentId, studentName: item.studentName, scheduledAt: '', status: 'scheduled', outcome: null, notes: null, teacherName: null }); setDialog('trial'); }} />}
+        {view === 'students' && <StudentDirectory api={api} onDetail={(id) => { setSelectedStudent(id); setDialog('student'); }} onSchedule={(item) => { setSelectedTrial({ id: '', inquiryId: item.id, studentId: item.studentId, studentName: item.studentName, scheduledAt: '', status: 'scheduled', outcome: null, notes: null, teacherName: null }); setDialog('trial'); }} />}
         {view === 'tasks' && <TaskCenter followUps={pending} trials={trials} onComplete={(item) => { setSelectedFollowUp(item); setDialog('followup'); }} onDetail={(id) => { setSelectedStudent(id); setDialog('student'); }} onResult={(item) => { setSelectedTrial(item); setDialog('result'); }} onReschedule={(item) => { setSelectedTrial(item); setDialog('reschedule'); }} onCancel={(item) => { setSelectedTrial(item); setDialog('cancel-trial'); }} />}
       </main>
       <nav className="mobile-nav" aria-label="移动端主导航"><NavItem active={view === 'overview'} icon="⌂" label="概览" onClick={() => setView('overview')} /><NavItem active={view === 'students'} icon="♙" label="学生" onClick={() => setView('students')} /><NavItem active={view === 'tasks'} icon="✓" label="任务" onClick={() => setView('tasks')} /></nav>
@@ -192,28 +193,42 @@ function DashboardSkeleton() {
   </div>;
 }
 
-function StudentDirectory({ inquiries, onDetail, onSchedule }: { inquiries: InquiryDto[]; onDetail: (id: string) => void; onSchedule: (item: InquiryDto) => void }) {
+function DirectoryTableSkeleton() {
+  return <div className="student-table-skeleton" role="status" aria-label="正在加载学生目录">{Array.from({ length: 5 }, (_, index) => <div className="student-table-skeleton-row" key={index}><span className="skeleton-block" /><span className="skeleton-block" /><span className="skeleton-block" /><span className="skeleton-block" /></div>)}</div>;
+}
+
+function StudentDirectory({ api, onDetail, onSchedule }: { api: ApiClient; onDetail: (id: string) => void; onSchedule: (item: InquiryDto) => void }) {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<'all' | InquiryDto['status']>('all');
-  const [page, setPage] = useState(0);
+  const [page, setPage] = useState(1);
+  const [result, setResult] = useState<StudentDirectoryDto | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
   const debouncedSearch = useDebouncedValue(search, 220);
-  const latestByStudent = new Map<string, InquiryDto>();
-  for (const inquiry of inquiries) {
-    if (!latestByStudent.has(inquiry.studentId)) latestByStudent.set(inquiry.studentId, inquiry);
-  }
-  const students = Array.from(latestByStudent.values());
-  const normalized = debouncedSearch.trim().toLowerCase();
-  const filtered = students.filter((item) => {
-    const matchesSearch = !normalized || [item.studentName, item.summary, item.channel].some((value) => value.toLowerCase().includes(normalized));
-    return matchesSearch && (status === 'all' || item.status === status);
-  });
-  const pages = Math.max(1, Math.ceil(filtered.length / 10));
-  const current = Math.min(page, pages - 1);
-  const currentRows = filtered.slice(current * 10, current * 10 + 10);
+  useEffect(() => { setPage(1); }, [debouncedSearch, status]);
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError('');
+    const params = new URLSearchParams({ page: String(page), pageSize: '10', search: debouncedSearch, status });
+    api<StudentDirectoryDto>(`/api/students?${params.toString()}`).then((next) => {
+      if (!active) return;
+      setResult(next);
+      if (next.totalPages > 0 && page > next.totalPages) setPage(next.totalPages);
+    }).catch((caught: unknown) => {
+      if (active) setError(caught instanceof Error ? caught.message : '学生目录加载失败');
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [api, debouncedSearch, status, page, attempt]);
+
+  const currentRows = result?.items ?? [];
+  const total = result?.total ?? 0;
+  const pages = result?.totalPages ?? 1;
 
   const exportCsv = useThrottledCallback(() => {
     const header = ['学生姓名', '最近咨询', '来源', '状态', '最近更新时间'];
-    const rows = filtered.map((item) => [item.studentName, item.summary, item.channel, statusLabel(item.status), formatDate(item.createdAt)]);
+    const rows = currentRows.map((item) => [item.studentName, item.summary, item.channel, statusLabel(item.status), formatDate(item.createdAt)]);
     const csv = [header, ...rows].map((row) => row.map((value) => `"${value.replaceAll('"', '""')}"`).join(',')).join('\r\n');
     const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -225,10 +240,10 @@ function StudentDirectory({ inquiries, onDetail, onSchedule }: { inquiries: Inqu
   }, 900);
 
   return <section className="panel directory-panel">
-    <div className="panel-heading directory-heading"><div><p className="section-kicker">STUDENT DIRECTORY</p><h3>学生与咨询</h3><p className="panel-help">按学生汇总最近一条咨询，打开详情查看完整历史。</p></div><button className="secondary-button" type="button" onClick={exportCsv} disabled={filtered.length === 0}>导出 CSV</button></div>
-    <div className="directory-filters"><input className="inquiry-search" type="search" aria-label="搜索学生、咨询内容或来源" placeholder="搜索学生、咨询内容或来源" value={search} onChange={(event) => { setSearch(event.target.value); setPage(0); }} /><select aria-label="按状态筛选" value={status} onChange={(event) => { setStatus(event.target.value as typeof status); setPage(0); }}><option value="all">全部状态</option><option value="new">新咨询</option><option value="contacted">已联系</option><option value="trial_scheduled">已安排试听</option><option value="converted">有报名意向</option><option value="lost">已流失</option></select></div>
-    <div className="student-table" role="table" aria-busy={search !== debouncedSearch} aria-label="学生与咨询列表"><div className="student-table-row student-table-head" role="row"><span>学生</span><span>最近咨询</span><span>来源</span><span>状态</span><span>操作</span></div>{currentRows.map((item) => <div className="student-table-row" role="row" key={item.studentId}><button className="student-link" onClick={() => onDetail(item.studentId)}>{item.studentName}</button><span className="table-summary">{item.summary}</span><span className="table-muted">{item.channel}</span><StatusChip value={item.status} /><div className="table-actions">{item.status === 'new' || item.status === 'contacted' ? <button className="small-action" onClick={() => onSchedule(item)}>安排试听</button> : <button className="small-action" onClick={() => onDetail(item.studentId)}>查看详情</button>}</div></div>)}{currentRows.length === 0 && <EmptyState title="没有匹配的学生" text={search || status !== 'all' ? '请调整搜索词或筛选条件。' : '登记第一位学生后，列表会显示在这里。'} />}</div>
-    <div className="directory-footer"><span>共 {filtered.length} 名学生</span>{pages > 1 && <div className="pagination"><button className="small-action" disabled={current === 0} onClick={() => setPage(current - 1)}>上一页</button><span>{current + 1} / {pages}</span><button className="small-action" disabled={current + 1 >= pages} onClick={() => setPage(current + 1)}>下一页</button></div>}</div>
+    <div className="panel-heading directory-heading"><div><p className="section-kicker">STUDENT DIRECTORY</p><h3>学生与咨询</h3><p className="panel-help">按学生汇总最近一条咨询，打开详情查看完整历史。</p></div><button className="secondary-button" type="button" onClick={exportCsv} disabled={loading || currentRows.length === 0}>导出当前页</button></div>
+    <div className="directory-filters"><input className="inquiry-search" type="search" aria-label="搜索学生、咨询内容或来源" placeholder="搜索学生、咨询内容或来源" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} /><select aria-label="按状态筛选" value={status} onChange={(event) => { setStatus(event.target.value as typeof status); setPage(1); }}><option value="all">全部状态</option><option value="new">新咨询</option><option value="contacted">已联系</option><option value="trial_scheduled">已安排试听</option><option value="converted">有报名意向</option><option value="lost">已流失</option></select></div>
+    {error ? <div className="form-error" role="alert">{error} <button type="button" className="text-button" onClick={() => setAttempt((value) => value + 1)}>重试</button></div> : loading && !result ? <DirectoryTableSkeleton /> : <div className="student-table" role="table" aria-busy={loading || search !== debouncedSearch} aria-label="学生与咨询列表"><div className="student-table-row student-table-head" role="row"><span>学生</span><span>最近咨询</span><span>来源</span><span>状态</span><span>操作</span></div>{currentRows.map((item) => <div className="student-table-row" role="row" key={item.studentId}><button className="student-link" onClick={() => onDetail(item.studentId)}>{item.studentName}</button><span className="table-summary">{item.summary}</span><span className="table-muted">{item.channel}</span><StatusChip value={item.status} /><div className="table-actions">{item.status === 'new' || item.status === 'contacted' ? <button className="small-action" onClick={() => onSchedule(item)}>安排试听</button> : <button className="small-action" onClick={() => onDetail(item.studentId)}>查看详情</button>}</div></div>)}{currentRows.length === 0 && <EmptyState title="没有匹配的学生" text={search || status !== 'all' ? '请调整搜索词或筛选条件。' : '登记第一位学生后，列表会显示在这里。'} />}</div>}
+    <div className="directory-footer"><span>共 {total} 名学生{loading && result ? ' · 更新中…' : ''}</span>{pages > 1 && <div className="pagination"><button className="small-action" disabled={page === 1 || loading} onClick={() => setPage((value) => value - 1)}>上一页</button><span>{page} / {pages}</span><button className="small-action" disabled={page >= pages || loading} onClick={() => setPage((value) => value + 1)}>下一页</button></div>}</div>
   </section>;
 }
 

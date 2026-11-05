@@ -89,6 +89,34 @@ test('fresh seed provides a realistic owner workload', async () => {
   assert.equal((await request('/api/dashboard')).body.counts.students, dashboard.body.counts.students);
 });
 
+test('student directory endpoint paginates latest inquiries within owner scope', async () => {
+  const firstPage = await request('/api/students?page=1&pageSize=5');
+  assert.equal(firstPage.status, 200);
+  assert.ok(firstPage.body.total >= 25);
+  assert.equal(firstPage.body.page, 1);
+  assert.equal(firstPage.body.pageSize, 5);
+  assert.ok(firstPage.body.items.length <= 5);
+  assert.equal(new Set(firstPage.body.items.map((item) => item.studentId)).size, firstPage.body.items.length);
+  assert.ok(firstPage.body.totalPages >= 5);
+
+  const created = await createLead('Directory search');
+  const searched = await request('/api/students?page=1&pageSize=10&search=Directory%20search');
+  assert.equal(searched.status, 200);
+  assert.equal(searched.body.total, 1);
+  assert.equal(searched.body.items[0].studentId, created.studentId);
+
+  const status = await request('/api/students?page=1&pageSize=10&status=new');
+  assert.equal(status.status, 200);
+  assert.ok(status.body.items.every((item) => item.status === 'new'));
+  assert.equal((await request('/api/students?page=0&pageSize=10')).status, 400);
+  assert.equal((await request('/api/students?page=1&pageSize=0')).status, 400);
+
+  const other = await request('/api/auth/login', 'POST', { email: 'ben@austin.edu', password: 'demo123' }, '');
+  const otherView = await request('/api/students?page=1&pageSize=10&search=Directory%20search', 'GET', undefined, other.cookie);
+  assert.equal(otherView.status, 200);
+  assert.equal(otherView.body.total, 0);
+});
+
 test('existing databases gain history tables without changing their students', () => {
   const legacyPath = join(tempDir, 'legacy.db');
   const env = { ...process.env, DB_PATH: legacyPath };

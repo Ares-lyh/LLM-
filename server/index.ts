@@ -139,7 +139,7 @@ function dashboard(userId: string): DashboardDto {
 
   const inquiries: InquiryDto[] = db.prepare(`
     SELECT i.*, s.name AS student_name FROM inquiries i JOIN students s ON s.id = i.student_id
-    WHERE s.owner_id = ? ORDER BY i.updated_at DESC
+    WHERE s.owner_id = ? ORDER BY i.updated_at DESC LIMIT 50
   `).all(userId).map((row) => mapInquiry(row as Record<string, unknown>));
   const trials: TrialDto[] = db.prepare(`
     SELECT t.*, s.name AS student_name, u.name AS teacher_name FROM trial_lessons t JOIN students s ON s.id = t.student_id
@@ -256,6 +256,40 @@ async function route(req: IncomingMessage, res: ServerResponse) {
   if (req.method === 'GET' && path === '/api/dashboard') {
     const user = requireAdmin(req, res);
     return user ? sendJson(res, 200, dashboard(user.id)) : undefined;
+  }
+
+  if (req.method === 'GET' && path === '/api/students') {
+    const user = requireAdmin(req, res);
+    if (!user) return;
+    const rawPage = url.searchParams.get('page') ?? '1';
+    const rawPageSize = url.searchParams.get('pageSize') ?? '10';
+    const page = Number(rawPage);
+    const pageSize = Number(rawPageSize);
+    const search = (url.searchParams.get('search') ?? '').trim();
+    const status = url.searchParams.get('status') ?? 'all';
+    if (!Number.isInteger(page) || page < 1 || page > 10_000 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 50 || search.length > 100 || !['all', 'new', 'contacted', 'trial_scheduled', 'converted', 'lost'].includes(status)) {
+      return sendError(res, 400, 'INVALID_REQUEST', '分页、搜索或状态筛选参数无效');
+    }
+    const searchPattern = `%${search.toLowerCase()}%`;
+    const filterParams = [user.id, searchPattern, searchPattern, searchPattern, status, status];
+    const latestCte = `
+      WITH latest AS (
+        SELECT i.id, i.student_id, s.name AS student_name, i.channel, i.summary, i.status, i.created_at,
+          ROW_NUMBER() OVER (PARTITION BY i.student_id ORDER BY i.updated_at DESC, i.created_at DESC, i.id DESC) AS row_number
+        FROM inquiries i
+        JOIN students s ON s.id = i.student_id
+        WHERE s.owner_id = ?
+      )
+    `;
+    const filterSql = `row_number = 1
+      AND (LOWER(student_name) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(channel) LIKE ?)
+      AND (? = 'all' OR status = ?)`;
+    const totalRow = db.prepare(`${latestCte} SELECT COUNT(*) AS total FROM latest WHERE ${filterSql}`).get(...filterParams) as { total: number };
+    const total = Number(totalRow.total);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const offset = (page - 1) * pageSize;
+    const items = page > totalPages ? [] : db.prepare(`${latestCte} SELECT id, student_id, student_name, channel, summary, status, created_at FROM latest WHERE ${filterSql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`).all(...filterParams, pageSize, offset).map((row) => mapInquiry(row as Record<string, unknown>));
+    return sendJson(res, 200, { items, page, pageSize, total, totalPages });
   }
 
   if (req.method === 'GET' && path === '/api/teachers') {

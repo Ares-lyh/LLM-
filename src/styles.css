@@ -102,6 +102,13 @@ h1, h2, h3, p { margin-top: 0; }
 .directory-filters .inquiry-search { margin: 0; }
 .directory-filters select { border: 1px solid #dce6ea; border-radius: 6px; color: #24475d; background: #fbfcfd; padding: 9px 10px; font-size: 12px; }
 .student-table { display: flex; flex-direction: column; border: 1px solid #edf0f2; border-radius: 8px; overflow: hidden; }
+.student-table-skeleton { display: flex; flex-direction: column; gap: 8px; }
+.student-table-skeleton-row { display: grid; grid-template-columns: minmax(105px, .75fr) minmax(160px, 1.7fr) minmax(70px, .55fr) minmax(90px, .7fr); align-items: center; gap: 12px; min-height: 54px; padding: 0 13px; border: 1px solid #edf0f2; border-radius: 8px; background: #fff; }
+.student-table-skeleton-row .skeleton-block { height: 12px; }
+.student-table-skeleton-row .skeleton-block:first-child { width: 72%; }
+.student-table-skeleton-row .skeleton-block:nth-child(2) { width: 88%; }
+.student-table-skeleton-row .skeleton-block:nth-child(3) { width: 56%; }
+.student-table-skeleton-row .skeleton-block:nth-child(4) { width: 68%; }
 .student-table-row { display: grid; grid-template-columns: minmax(105px, .75fr) minmax(160px, 1.7fr) minmax(70px, .55fr) minmax(90px, .7fr) minmax(95px, .7fr); align-items: center; gap: 12px; min-height: 54px; padding: 0 13px; border-bottom: 1px solid #f0f2f4; }
 .student-table-row:last-child { border-bottom: 0; }
 .student-table-head { min-height: 38px; background: #f8fafb; color: #8397a2; font-size: 10px; font-weight: 600; }
@@ -133,6 +140,11 @@ h1, h2, h3, p { margin-top: 0; }
   .mobile-nav .nav-item span { width: auto; font-size: 16px; }
   .directory-filters { grid-template-columns: 1fr; }
   .student-table { overflow: visible; border: 0; gap: 8px; }
+  .student-table-skeleton-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 10px; min-height: 86px; padding: 12px; }
+  .student-table-skeleton-row .skeleton-block:first-child { grid-column: 1; width: 62%; }
+  .student-table-skeleton-row .skeleton-block:nth-child(2) { grid-column: 1 / -1; width: 96%; }
+  .student-table-skeleton-row .skeleton-block:nth-child(3) { grid-column: 1; width: 48%; }
+  .student-table-skeleton-row .skeleton-block:nth-child(4) { grid-column: 2; width: 72px; }
   .student-table-head { display: none; }
   .student-table-row { grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; min-height: 0; padding: 12px; border: 1px solid #edf0f2; border-radius: 8px; }
   .student-table-row > .student-link { grid-column: 1; grid-row: 1; }

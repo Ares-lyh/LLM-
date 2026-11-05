@@ -109,6 +109,14 @@ export interface DashboardDto {
   followUps: FollowUpDto[];
 }
 
+export interface StudentDirectoryDto {
+  items: InquiryDto[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
 export interface ApiError {
   error: string;
   code: string;
