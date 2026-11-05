@@ -15,12 +15,13 @@ let dbPath;
 let base;
 let cookie;
 let llmServer;
+let raceModelStarted;
 const modelRequests = [];
 
-async function request(path, method = 'GET', body, session = cookie) {
+async function request(path, method = 'GET', body, session = cookie, headers = {}) {
   const response = await fetch(`${base}${path}`, {
     method,
-    headers: { ...(session ? { Cookie: session } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    headers: { ...(session ? { Cookie: session } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
   return { status: response.status, body: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0] };
@@ -41,6 +42,7 @@ before(async () => {
     const input = JSON.parse(Buffer.concat(parts).toString());
     modelRequests.push(input);
     const prompt = input.messages[0].content;
+    if (prompt.includes('reschedule race')) { raceModelStarted?.(); await new Promise((resolve) => setTimeout(resolve, 300)); }
     if (prompt.includes('model timeout')) await new Promise((resolve) => setTimeout(resolve, 4200));
     if (prompt.includes('model error')) { res.writeHead(503).end(); return; }
     const content = prompt.includes('invalid model') ? '{broken' : JSON.stringify({ summary: '测试建议：联系家长确认课程时间。' });
@@ -84,6 +86,89 @@ test('fresh seed provides a realistic owner workload', async () => {
   assert.equal(repeated.status, 0, repeated.stderr);
   assert.match(repeated.stdout, /seed skipped/);
   assert.equal((await request('/api/dashboard')).body.counts.students, dashboard.body.counts.students);
+});
+
+test('existing databases gain history tables without changing their students', () => {
+  const legacyPath = join(tempDir, 'legacy.db');
+  const env = { ...process.env, DB_PATH: legacyPath };
+  assert.equal(spawnSync(process.execPath, ['dist-server/server/seed.js'], { env, encoding: 'utf8' }).status, 0);
+  const old = new DatabaseSync(legacyPath);
+  const count = old.prepare('SELECT COUNT(*) AS count FROM students').get().count;
+  old.exec('DROP TABLE trial_reschedules; DROP TABLE trial_teachers; DROP TABLE teacher_assignments;');
+  old.close();
+  const upgraded = spawnSync(process.execPath, ['dist-server/server/seed.js'], { env, encoding: 'utf8' });
+  assert.equal(upgraded.status, 0, upgraded.stderr);
+  assert.match(upgraded.stdout, /seed skipped/);
+  const check = new DatabaseSync(legacyPath);
+  assert.equal(check.prepare('SELECT COUNT(*) AS count FROM students').get().count, count);
+  assert.equal(check.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN ('teacher_assignments', 'trial_teachers', 'trial_reschedules')").get().count, 3);
+  assert.equal(check.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = '20261105_teacher_and_trial_history'").get().count, 1);
+  check.close();
+});
+
+test('teacher assignment and trial rescheduling preserve history and reject stale changes', async () => {
+  const db = new DatabaseSync(dbPath);
+  const passwordHash = db.prepare("SELECT password_hash FROM users WHERE role = 'admin' LIMIT 1").get().password_hash;
+  const insert = db.prepare("INSERT INTO users (id, email, name, role, password_hash, created_at) VALUES (?, ?, ?, 'teacher', ?, ?)");
+  insert.run('teacher-test-1', 'teacher1@example.test', 'Teacher One', passwordHash, new Date().toISOString());
+  insert.run('teacher-test-2', 'teacher2@example.test', 'Teacher Two', passwordHash, new Date().toISOString());
+  db.close();
+  const lead = await createLead('Assignment history');
+  assert.equal((await request(`/api/students/${lead.studentId}`)).body.student.teacherId, null);
+  const teachers = await request('/api/teachers');
+  assert.ok(teachers.body.teachers.some((teacher) => teacher.id === 'teacher-test-1'));
+  const scheduled = await request(`/api/inquiries/${lead.inquiryId}/trial`, 'POST', { scheduledAt: '2030-04-01T00:00:00.000Z', teacherId: 'teacher-test-1' });
+  assert.equal(scheduled.status, 201);
+  const key = { 'X-Idempotency-Key': 'assignment-history-1' };
+  const assignment = { teacherId: 'teacher-test-2', expectedTeacherId: 'teacher-test-1' };
+  assert.equal((await request(`/api/students/${lead.studentId}/teacher`, 'POST', assignment, cookie, key)).status, 200);
+  assert.equal((await request(`/api/students/${lead.studentId}/teacher`, 'POST', assignment, cookie, key)).status, 200);
+  assert.equal((await request(`/api/students/${lead.studentId}/teacher`, 'POST', { teacherId: 'teacher-test-1', expectedTeacherId: null }, cookie, { 'X-Idempotency-Key': 'stale-assignment' })).status, 409);
+  const change = { scheduledAt: '2030-04-02T00:00:00.000Z', expectedScheduledAt: '2030-04-01T00:00:00.000Z', reason: '家长调整时间' };
+  const changeKey = { 'X-Idempotency-Key': 'trial-change-1' };
+  assert.equal((await request(`/api/trials/${scheduled.body.trialId}/reschedule`, 'POST', change, cookie, changeKey)).status, 200);
+  assert.equal((await request(`/api/trials/${scheduled.body.trialId}/reschedule`, 'POST', change, cookie, changeKey)).status, 200);
+  assert.equal((await request(`/api/trials/${scheduled.body.trialId}/reschedule`, 'POST', { ...change, reason: 'another reason' }, cookie, changeKey)).status, 409);
+  assert.equal((await request(`/api/trials/${scheduled.body.trialId}/reschedule`, 'POST', change)).status, 400);
+  assert.equal((await request(`/api/trials/${scheduled.body.trialId}/reschedule`, 'POST', { ...change, scheduledAt: '2030-04-03T00:00:00.000Z' }, cookie, { 'X-Idempotency-Key': 'trial-change-stale' })).status, 409);
+  const detail = await request(`/api/students/${lead.studentId}`);
+  assert.equal(detail.body.student.teacherId, 'teacher-test-2');
+  assert.deepEqual(detail.body.teacherHistory.map((item) => item.teacherName), ['Teacher One', 'Teacher Two']);
+  assert.equal(detail.body.trials[0].teacherName, 'Teacher One');
+  assert.equal(detail.body.trialReschedules.length, 1);
+  assert.equal(detail.body.trialReschedules[0].previousScheduledAt, change.expectedScheduledAt);
+  assert.equal(detail.body.trialReschedules[0].scheduledAt, change.scheduledAt);
+  assert.equal(detail.body.trialReschedules[0].reason, change.reason);
+  const other = await request('/api/auth/login', 'POST', { email: 'ben@austin.edu', password: 'demo123' }, '');
+  assert.equal((await request(`/api/trials/${scheduled.body.trialId}/reschedule`, 'POST', change, other.cookie, { 'X-Idempotency-Key': 'other-owner' })).status, 403);
+});
+
+test('only admins may create teachers, and teacher input is validated', async () => {
+  const input = { name: 'New Teacher', email: 'new-teacher@example.test', password: 'long-test-password' };
+  assert.equal((await request('/api/teachers', 'POST', input, '')).status, 401);
+  assert.equal((await request('/api/teachers', 'POST', { ...input, password: 'short' })).status, 400);
+  assert.equal((await request('/api/teachers', 'POST', input)).status, 201);
+  assert.equal((await request('/api/teachers', 'POST', input)).status, 409);
+  const login = await request('/api/auth/login', 'POST', { email: input.email, password: input.password }, '');
+  assert.equal(login.status, 200);
+  assert.equal((await request('/api/teachers', 'POST', { ...input, email: 'other@example.test' }, login.cookie)).status, 403);
+  assert.equal((await request('/api/teachers', 'GET', undefined, login.cookie)).status, 403);
+});
+
+test('completion cannot overwrite a trial rescheduled while AI is running', async () => {
+  const lead = await createLead('Reschedule race');
+  const scheduled = await request(`/api/inquiries/${lead.inquiryId}/trial`, 'POST', { scheduledAt: '2030-05-01T00:00:00.000Z' });
+  const modelStarted = new Promise((resolve) => { raceModelStarted = resolve; });
+  const completion = request(`/api/trials/${scheduled.body.trialId}/complete`, 'POST', { outcome: 'interested', notes: 'reschedule race' });
+  await modelStarted;
+  const changed = await request(`/api/trials/${scheduled.body.trialId}/reschedule`, 'POST', { expectedScheduledAt: '2030-05-01T00:00:00.000Z', scheduledAt: '2030-05-02T00:00:00.000Z', reason: '改期' }, cookie, { 'X-Idempotency-Key': 'reschedule-race' });
+  assert.equal(changed.status, 200);
+  assert.equal((await completion).status, 409);
+  const detail = await request(`/api/students/${lead.studentId}`);
+  assert.equal(detail.body.trials[0].status, 'scheduled');
+  assert.equal(detail.body.trials[0].scheduledAt, '2030-05-02T00:00:00.000Z');
+  assert.equal(detail.body.followUps.length, 0);
+  raceModelStarted = undefined;
 });
 
 test('scheduled trials remain visible after many historical trials', async () => {
@@ -187,7 +272,7 @@ test('untrusted browser origins cannot mutate state', async () => {
   assert.equal((await request('/api/leads', 'POST', null)).status, 400);
 });
 
-test('a confirmed enrollment closes remaining work and records the decision', async () => {
+test('enrollment intent closes remaining work and records the decision', async () => {
   const lead = await createLead('Enrollment test');
   const trial = await request(`/api/inquiries/${lead.inquiryId}/trial`, 'POST', { scheduledAt: '2030-03-01T00:00:00Z' });
   await request(`/api/trials/${trial.body.trialId}/complete`, 'POST', { outcome: 'interested', notes: 'Good trial' });
@@ -196,7 +281,7 @@ test('a confirmed enrollment closes remaining work and records the decision', as
   const response = await request(`/api/follow-ups/${task.id}/complete`, 'POST', { outcome: 'converted', notes: 'Family confirmed enrollment' });
   assert.equal(response.status, 200);
   const detail = await request(`/api/students/${lead.studentId}`);
-  assert.equal(detail.body.student.status, 'active');
+  assert.equal(detail.body.student.status, 'enrollment_intent');
   assert.equal(detail.body.inquiries[0].status, 'converted');
   assert.ok(detail.body.followUps.some((item) => item.resultOutcome === 'converted'));
   assert.ok(!detail.body.followUps.some((item) => item.status === 'pending'));

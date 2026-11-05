@@ -1,5 +1,5 @@
 export type Role = 'admin' | 'teacher';
-export type StudentStatus = 'lead' | 'trial' | 'active' | 'lost';
+export type StudentStatus = 'lead' | 'trial' | 'enrollment_intent' | 'lost';
 export type InquiryStatus = 'new' | 'contacted' | 'trial_scheduled' | 'converted' | 'lost';
 export type TrialStatus = 'scheduled' | 'completed' | 'cancelled';
 export type TrialOutcome = 'interested' | 'undecided' | 'not_interested';
@@ -13,6 +13,9 @@ export interface UserDto {
   role: Role;
 }
 
+export interface TeacherDto { id: string; name: string }
+export interface CreateTeacherInput { name: string; email: string; password: string }
+
 export interface StudentDto {
   id: string;
   name: string;
@@ -20,6 +23,8 @@ export interface StudentDto {
   guardianPhone: string;
   ownerId: string;
   ownerName: string;
+  teacherId: string | null;
+  teacherName: string | null;
   status: StudentStatus;
   createdAt: string;
 }
@@ -43,6 +48,23 @@ export interface TrialDto {
   status: TrialStatus;
   outcome: TrialOutcome | null;
   notes: string | null;
+  teacherName: string | null;
+}
+
+export interface TeacherAssignmentDto {
+  teacherId: string;
+  teacherName: string;
+  assignedAt: string;
+  assignedByName: string;
+}
+
+export interface TrialRescheduleDto {
+  trialId: string;
+  previousScheduledAt: string;
+  scheduledAt: string;
+  reason: string;
+  changedAt: string;
+  changedByName: string;
 }
 
 export interface FollowUpDto {
@@ -63,6 +85,8 @@ export interface StudentDetailDto {
   inquiries: InquiryDto[];
   trials: TrialDto[];
   followUps: FollowUpDto[];
+  teacherHistory: TeacherAssignmentDto[];
+  trialReschedules: TrialRescheduleDto[];
 }
 
 export interface DashboardDto {
@@ -92,6 +116,18 @@ export interface CreateLeadInput {
 
 export interface ScheduleTrialInput {
   scheduledAt: string;
+  teacherId?: string;
+}
+
+export interface AssignTeacherInput {
+  teacherId: string;
+  expectedTeacherId: string | null;
+}
+
+export interface RescheduleTrialInput {
+  scheduledAt: string;
+  expectedScheduledAt: string;
+  reason: string;
 }
 
 export interface CompleteTrialInput {

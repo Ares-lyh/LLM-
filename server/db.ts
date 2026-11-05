@@ -86,6 +86,28 @@ export function migrate() {
     CREATE INDEX IF NOT EXISTS idx_students_owner ON students(owner_id);
     CREATE INDEX IF NOT EXISTS idx_follow_ups_status_due ON follow_ups(status, due_at);
     CREATE INDEX IF NOT EXISTS idx_trials_scheduled_at ON trial_lessons(scheduled_at);
+
+    CREATE TABLE IF NOT EXISTS teacher_assignments (
+      id TEXT PRIMARY KEY, student_id TEXT NOT NULL REFERENCES students(id),
+      teacher_id TEXT NOT NULL REFERENCES users(id), assigned_by TEXT NOT NULL REFERENCES users(id),
+      assigned_at TEXT NOT NULL, ended_at TEXT, request_key TEXT, request_body TEXT,
+      UNIQUE(assigned_by, request_key)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS one_current_teacher ON teacher_assignments(student_id) WHERE ended_at IS NULL;
+    CREATE TABLE IF NOT EXISTS trial_teachers (
+      trial_id TEXT PRIMARY KEY REFERENCES trial_lessons(id), teacher_id TEXT NOT NULL REFERENCES users(id)
+    );
+    CREATE TABLE IF NOT EXISTS trial_reschedules (
+      id TEXT PRIMARY KEY, trial_id TEXT NOT NULL REFERENCES trial_lessons(id),
+      previous_scheduled_at TEXT NOT NULL, scheduled_at TEXT NOT NULL, reason TEXT NOT NULL,
+      changed_by TEXT NOT NULL REFERENCES users(id), changed_at TEXT NOT NULL,
+      request_key TEXT NOT NULL, request_body TEXT NOT NULL, UNIQUE(changed_by, request_key)
+    );
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version TEXT PRIMARY KEY, applied_at TEXT NOT NULL
+    );
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+      VALUES ('20261105_teacher_and_trial_history', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
   `);
 }
 

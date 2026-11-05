@@ -89,3 +89,6 @@ h1, h2, h3, p { margin-top: 0; }
 .inquiry-search { width: 100%; margin-bottom: 10px; padding: 9px 10px; border: 1px solid #dce6ea; border-radius: 6px; color: #24475d; background: #fbfcfd; font-size: 12px; }
 .pagination { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 14px; color: #7f929f; font-size: 11px; }
 .pagination button:disabled { opacity: .4; cursor: default; }
+.trial-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.teacher-assignment { margin: 10px 0; }
+.hero-actions { flex-wrap: wrap; }
