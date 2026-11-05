@@ -3,7 +3,8 @@ import { URL } from 'node:url';
 import { Temporal } from '@js-temporal/polyfill';
 import { clearSession, clearSessionCookie, createSession, getSessionUser, hashPassword, setSessionCookie, userDto, verifyPassword } from './auth.js';
 import { db, id, nowIso } from './db.js';
-import { assignTeacher, currentTeacher, rescheduleTrial, setTeacher, teacherExists } from './scheduling.js';
+import { assignTeacher, cancelTrial, currentTeacher, rescheduleTrial, setTeacher, teacherExists } from './scheduling.js';
+import { createReturningInquiry } from './student-workflow.js';
 import type { CompleteFollowUpInput, CompleteTrialInput, CreateLeadInput, DashboardDto, FollowUpOutcome, FollowUpStatus, InquiryDto, InquiryStatus, ScheduleTrialInput, TrialDto, TrialOutcome, TrialStatus } from '../src/shared/contracts.js';
 
 const port = Number(process.env.PORT ?? 3001);
@@ -113,6 +114,17 @@ function mapFollowUp(row: Record<string, unknown>) {
     aiSummary: row.ai_summary ? String(row.ai_summary) : null,
     resultNote: row.result_note ? String(row.result_note) : null,
     resultOutcome: row.result_outcome ? String(row.result_outcome) as FollowUpOutcome : null,
+  };
+}
+
+function mapDuplicateStudent(row: Record<string, unknown>) {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    guardianName: String(row.guardian_name),
+    guardianPhone: String(row.guardian_phone),
+    status: row.status === 'active' ? 'enrollment_intent' : String(row.status),
+    createdAt: String(row.created_at),
   };
 }
 
@@ -273,6 +285,32 @@ async function route(req: IncomingMessage, res: ServerResponse) {
   }
 
   const studentMatch = path.match(/^\/api\/students\/([^/]+)$/);
+  if (req.method === 'PATCH' && studentMatch) {
+    const user = requireAdmin(req, res);
+    if (!user) return;
+    const student = db.prepare('SELECT owner_id FROM students WHERE id = ?').get(studentMatch[1]) as { owner_id: string } | undefined;
+    if (!student) return sendError(res, 404, 'STUDENT_NOT_FOUND', '学生不存在');
+    if (student.owner_id !== user.id) return sendError(res, 403, 'FORBIDDEN', '只能操作自己负责的学生');
+    try {
+      const body = await readJson(req);
+      const expected = body.expected;
+      if (!expected || typeof expected !== 'object' || Array.isArray(expected)) throw new Error('INVALID_EXPECTED');
+      const before = expected as Record<string, unknown>;
+      const name = asNonEmptyString(body.name, 'name');
+      const guardianName = asNonEmptyString(body.guardianName, 'guardianName');
+      const guardianPhone = asNonEmptyString(body.guardianPhone, 'guardianPhone');
+      const oldName = asNonEmptyString(before.name, 'name');
+      const oldGuardian = asNonEmptyString(before.guardianName, 'guardianName');
+      const oldPhone = asNonEmptyString(before.guardianPhone, 'guardianPhone');
+      if (name.length > 100 || guardianName.length > 100 || guardianPhone.length > 50) throw new Error('INVALID_LENGTH');
+      const result = db.prepare('UPDATE students SET name = ?, guardian_name = ?, guardian_phone = ? WHERE id = ? AND owner_id = ? AND name = ? AND guardian_name = ? AND guardian_phone = ?').run(name, guardianName, guardianPhone, studentMatch[1], user.id, oldName, oldGuardian, oldPhone);
+      if (Number(result.changes) !== 1) return sendError(res, 409, 'STUDENT_CHANGED', '学生资料已变更，请刷新后重试');
+      return sendJson(res, 200, { ok: true });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('INVALID_')) return sendError(res, 400, 'INVALID_REQUEST', '请填写有效的学生和家长资料');
+      throw error;
+    }
+  }
   if (req.method === 'GET' && studentMatch) {
     const user = requireAdmin(req, res);
     if (!user) return;
@@ -284,13 +322,33 @@ async function route(req: IncomingMessage, res: ServerResponse) {
     const followUps = db.prepare('SELECT f.*, s.name AS student_name, r.notes AS result_note, r.outcome AS result_outcome FROM follow_ups f JOIN students s ON s.id = f.student_id LEFT JOIN follow_up_results r ON r.follow_up_id = f.id WHERE s.id = ? ORDER BY f.created_at DESC').all(studentMatch[1]).map((row) => mapFollowUp(row as Record<string, unknown>));
     const teacherHistory = db.prepare('SELECT a.teacher_id AS teacherId, t.name AS teacherName, a.assigned_at AS assignedAt, u.name AS assignedByName FROM teacher_assignments a JOIN users t ON t.id = a.teacher_id JOIN users u ON u.id = a.assigned_by WHERE a.student_id = ? ORDER BY a.rowid').all(studentMatch[1]);
     const trialReschedules = db.prepare('SELECT r.trial_id AS trialId, r.previous_scheduled_at AS previousScheduledAt, r.scheduled_at AS scheduledAt, r.reason, r.changed_at AS changedAt, u.name AS changedByName FROM trial_reschedules r JOIN trial_lessons t ON t.id = r.trial_id JOIN users u ON u.id = r.changed_by WHERE t.student_id = ? ORDER BY r.rowid').all(studentMatch[1]);
+    const trialCancellations = db.prepare('SELECT c.trial_id AS trialId, c.reason, c.cancelled_at AS cancelledAt, u.name AS cancelledByName FROM trial_cancellations c JOIN trial_lessons t ON t.id = c.trial_id JOIN users u ON u.id = c.cancelled_by WHERE t.student_id = ? ORDER BY c.rowid').all(studentMatch[1]);
     const teacher = teacherHistory.at(-1);
-    return sendJson(res, 200, { student: { id: String(student.id), name: String(student.name), guardianName: String(student.guardian_name), guardianPhone: String(student.guardian_phone), ownerId: String(student.owner_id), ownerName: String(student.owner_name), teacherId: teacher?.teacherId ?? null, teacherName: teacher?.teacherName ?? null, status: student.status === 'active' ? 'enrollment_intent' : String(student.status), createdAt: String(student.created_at) }, inquiries, trials, followUps, teacherHistory, trialReschedules });
+    return sendJson(res, 200, { student: { id: String(student.id), name: String(student.name), guardianName: String(student.guardian_name), guardianPhone: String(student.guardian_phone), ownerId: String(student.owner_id), ownerName: String(student.owner_name), teacherId: teacher?.teacherId ?? null, teacherName: teacher?.teacherName ?? null, status: student.status === 'active' ? 'enrollment_intent' : String(student.status), createdAt: String(student.created_at) }, inquiries, trials, followUps, teacherHistory, trialReschedules, trialCancellations });
+  }
+
+  const returningInquiryMatch = path.match(/^\/api\/students\/([^/]+)\/inquiries$/);
+  if (req.method === 'POST' && returningInquiryMatch) {
+    const user = requireAdmin(req, res);
+    if (!user) return;
+    try {
+      const key = asNonEmptyString(req.headers['x-idempotency-key'], 'key');
+      const body = await readJson(req);
+      const channel = asNonEmptyString(body.channel, 'channel');
+      const summary = asNonEmptyString(body.summary, 'summary');
+      if (key.length > 128 || channel.length > 100 || summary.length > 2000) throw new Error('INVALID_LENGTH');
+      const result = createReturningInquiry(returningInquiryMatch[1], user.id, key, channel, summary);
+      return sendJson(res, result.status, result.body);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('INVALID_')) return sendError(res, 400, 'INVALID_REQUEST', '请填写有效的咨询信息');
+      throw error;
+    }
   }
 
   const teacherMatch = path.match(/^\/api\/students\/([^/]+)\/teacher$/);
   const rescheduleMatch = path.match(/^\/api\/trials\/([^/]+)\/reschedule$/);
-  if (req.method === 'POST' && (teacherMatch || rescheduleMatch)) {
+  const cancelMatch = path.match(/^\/api\/trials\/([^/]+)\/cancel$/);
+  if (req.method === 'POST' && (teacherMatch || rescheduleMatch || cancelMatch)) {
     const user = requireAdmin(req, res);
     if (!user) return;
     try {
@@ -303,10 +361,14 @@ async function route(req: IncomingMessage, res: ServerResponse) {
         const result = assignTeacher(teacherMatch[1], user.id, key, teacherId, body.expectedTeacherId as string | null);
         return sendJson(res, result.status, result.body);
       }
-      const scheduledAt = asDate(body.scheduledAt, 'scheduledAt');
       const expected = asDate(body.expectedScheduledAt, 'expectedScheduledAt');
       const reason = asNonEmptyString(body.reason, 'reason');
       if (reason.length > 500) throw new Error('INVALID_REASON');
+      if (cancelMatch) {
+        const result = cancelTrial(cancelMatch[1], user.id, key, expected, reason);
+        return sendJson(res, result.status, result.body);
+      }
+      const scheduledAt = asDate(body.scheduledAt, 'scheduledAt');
       const result = rescheduleTrial(rescheduleMatch![1], user.id, key, scheduledAt, expected, reason);
       return sendJson(res, result.status, result.body);
     } catch (error) {
@@ -325,6 +387,23 @@ async function route(req: IncomingMessage, res: ServerResponse) {
       const guardianPhone = asNonEmptyString(body.guardianPhone, 'guardianPhone');
       const channel = asNonEmptyString(body.channel, 'channel');
       const summary = asNonEmptyString(body.summary, 'summary');
+      const allowDuplicate = body.allowDuplicate === undefined ? false : body.allowDuplicate;
+      if (typeof allowDuplicate !== 'boolean') throw new Error('INVALID_ALLOW_DUPLICATE');
+      if (studentName.length > 100 || guardianName.length > 100 || guardianPhone.length > 50 || channel.length > 100 || summary.length > 2000) throw new Error('INVALID_LENGTH');
+      if (!allowDuplicate) {
+        const matches = db.prepare(`
+          SELECT id, name, guardian_name, guardian_phone, status, created_at
+          FROM students
+          WHERE owner_id = ?
+            AND (
+              guardian_phone = ?
+              OR (LOWER(TRIM(name)) = LOWER(TRIM(?)) AND LOWER(TRIM(guardian_name)) = LOWER(TRIM(?)))
+            )
+          ORDER BY created_at DESC
+          LIMIT 5
+        `).all(user.id, guardianPhone, studentName, guardianName).map((row) => mapDuplicateStudent(row as Record<string, unknown>));
+        if (matches.length > 0) return sendJson(res, 409, { code: 'DUPLICATE_STUDENT', error: '发现可能重复的学生记录', matches });
+      }
       const studentId = id('stu');
       const inquiryId = id('inq');
       const now = nowIso();
@@ -339,7 +418,7 @@ async function route(req: IncomingMessage, res: ServerResponse) {
       }
       return sendJson(res, 201, { studentId, inquiryId });
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith('INVALID_')) return sendError(res, 400, 'INVALID_REQUEST', '请填写完整的咨询信息');
+      if (error instanceof Error && error.message.startsWith('INVALID_')) return sendError(res, 400, 'INVALID_REQUEST', '请填写完整且有效的咨询信息');
       throw error;
     }
   }
@@ -361,13 +440,17 @@ async function route(req: IncomingMessage, res: ServerResponse) {
       if (!['new', 'contacted'].includes(String(inquiry.status))) return sendError(res, 409, 'INVALID_INQUIRY_STATE', '当前咨询状态不能安排试听');
       const conflict = db.prepare("SELECT id FROM trial_lessons WHERE student_id = ? AND status = 'scheduled'").get(String(inquiry.student_id));
       if (conflict) return sendError(res, 409, 'TRIAL_ALREADY_SCHEDULED', '该学生已有一条待完成试听');
+      const trialTeacher = teacherId ?? currentTeacher(String(inquiry.student_id));
+      if (trialTeacher) {
+        const teacherConflict = db.prepare("SELECT t.id FROM trial_lessons t JOIN trial_teachers tt ON tt.trial_id = t.id WHERE t.status = 'scheduled' AND tt.teacher_id = ? AND t.scheduled_at = ?").get(trialTeacher, scheduledAt);
+        if (teacherConflict) return sendError(res, 409, 'TEACHER_BUSY', '该老师在这个时间已有另一场试听，请选择其他时间');
+      }
       const trialId = id('trl');
       const now = nowIso();
       db.exec('BEGIN IMMEDIATE');
       try {
         db.prepare('INSERT INTO trial_lessons (id, student_id, inquiry_id, scheduled_at, status, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(trialId, String(inquiry.student_id), inquiryId, scheduledAt, 'scheduled', user.id, now);
         if (teacherId && currentTeacher(String(inquiry.student_id)) !== teacherId) setTeacher(String(inquiry.student_id), teacherId, user.id);
-        const trialTeacher = teacherId ?? currentTeacher(String(inquiry.student_id));
         if (trialTeacher) db.prepare('INSERT INTO trial_teachers (trial_id, teacher_id) VALUES (?, ?)').run(trialId, trialTeacher);
         db.prepare("UPDATE inquiries SET status = 'trial_scheduled', updated_at = ? WHERE id = ?").run(now, inquiryId);
         db.prepare("UPDATE students SET status = 'trial' WHERE id = ?").run(String(inquiry.student_id));

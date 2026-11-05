@@ -108,6 +108,20 @@ export function migrate() {
     );
     INSERT OR IGNORE INTO schema_migrations (version, applied_at)
       VALUES ('20261105_teacher_and_trial_history', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+    CREATE TABLE IF NOT EXISTS trial_cancellations (
+      trial_id TEXT PRIMARY KEY REFERENCES trial_lessons(id), reason TEXT NOT NULL,
+      cancelled_by TEXT NOT NULL REFERENCES users(id), cancelled_at TEXT NOT NULL,
+      request_key TEXT NOT NULL, request_body TEXT NOT NULL, UNIQUE(cancelled_by, request_key)
+    );
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+      VALUES ('20261105_trial_cancellations', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+    CREATE TABLE IF NOT EXISTS inquiry_requests (
+      user_id TEXT NOT NULL REFERENCES users(id), request_key TEXT NOT NULL,
+      request_body TEXT NOT NULL, inquiry_id TEXT NOT NULL REFERENCES inquiries(id),
+      PRIMARY KEY(user_id, request_key)
+    );
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+      VALUES ('20261105_returning_inquiries', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
   `);
 }
 

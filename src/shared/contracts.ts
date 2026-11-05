@@ -67,6 +67,13 @@ export interface TrialRescheduleDto {
   changedByName: string;
 }
 
+export interface TrialCancellationDto {
+  trialId: string;
+  reason: string;
+  cancelledAt: string;
+  cancelledByName: string;
+}
+
 export interface FollowUpDto {
   id: string;
   inquiryId: string;
@@ -87,6 +94,7 @@ export interface StudentDetailDto {
   followUps: FollowUpDto[];
   teacherHistory: TeacherAssignmentDto[];
   trialReschedules: TrialRescheduleDto[];
+  trialCancellations: TrialCancellationDto[];
 }
 
 export interface DashboardDto {
@@ -104,12 +112,38 @@ export interface DashboardDto {
 export interface ApiError {
   error: string;
   code: string;
+  matches?: DuplicateStudentDto[];
 }
 
 export interface CreateLeadInput {
   studentName: string;
   guardianName: string;
   guardianPhone: string;
+  channel: string;
+  summary: string;
+  allowDuplicate?: boolean;
+}
+
+export interface DuplicateStudentDto {
+  id: string;
+  name: string;
+  guardianName: string;
+  guardianPhone: string;
+  status: StudentStatus;
+  createdAt: string;
+}
+
+export interface StudentContactInput {
+  name: string;
+  guardianName: string;
+  guardianPhone: string;
+}
+
+export interface UpdateStudentInput extends StudentContactInput {
+  expected: StudentContactInput;
+}
+
+export interface CreateInquiryInput {
   channel: string;
   summary: string;
 }
@@ -126,6 +160,11 @@ export interface AssignTeacherInput {
 
 export interface RescheduleTrialInput {
   scheduledAt: string;
+  expectedScheduledAt: string;
+  reason: string;
+}
+
+export interface CancelTrialInput {
   expectedScheduledAt: string;
   reason: string;
 }

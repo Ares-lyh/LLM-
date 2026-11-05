@@ -17,6 +17,7 @@ let cookie;
 let llmServer;
 let raceModelStarted;
 const modelRequests = [];
+let leadSequence = 0;
 
 async function request(path, method = 'GET', body, session = cookie, headers = {}) {
   const response = await fetch(`${base}${path}`, {
@@ -27,8 +28,8 @@ async function request(path, method = 'GET', body, session = cookie, headers = {
   return { status: response.status, body: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0] };
 }
 
-async function createLead(name) {
-  const result = await request('/api/leads', 'POST', { studentName: name, guardianName: 'Test parent', guardianPhone: '0400000000', channel: '电话', summary: 'Test inquiry' });
+async function createLead(name, guardianPhone = `0400${String(++leadSequence).padStart(6, '0')}`) {
+  const result = await request('/api/leads', 'POST', { studentName: name, guardianName: 'Test parent', guardianPhone, channel: '电话', summary: 'Test inquiry' });
   assert.equal(result.status, 201);
   return result.body;
 }
@@ -94,7 +95,7 @@ test('existing databases gain history tables without changing their students', (
   assert.equal(spawnSync(process.execPath, ['dist-server/server/seed.js'], { env, encoding: 'utf8' }).status, 0);
   const old = new DatabaseSync(legacyPath);
   const count = old.prepare('SELECT COUNT(*) AS count FROM students').get().count;
-  old.exec('DROP TABLE trial_reschedules; DROP TABLE trial_teachers; DROP TABLE teacher_assignments;');
+  old.exec('DROP TABLE inquiry_requests; DROP TABLE trial_cancellations; DROP TABLE trial_reschedules; DROP TABLE trial_teachers; DROP TABLE teacher_assignments;');
   old.close();
   const upgraded = spawnSync(process.execPath, ['dist-server/server/seed.js'], { env, encoding: 'utf8' });
   assert.equal(upgraded.status, 0, upgraded.stderr);
@@ -103,6 +104,7 @@ test('existing databases gain history tables without changing their students', (
   assert.equal(check.prepare('SELECT COUNT(*) AS count FROM students').get().count, count);
   assert.equal(check.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN ('teacher_assignments', 'trial_teachers', 'trial_reschedules')").get().count, 3);
   assert.equal(check.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = '20261105_teacher_and_trial_history'").get().count, 1);
+  assert.equal(check.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN ('trial_cancellations', 'inquiry_requests')").get().count, 2);
   check.close();
 });
 
@@ -155,6 +157,110 @@ test('only admins may create teachers, and teacher input is validated', async ()
   assert.equal((await request('/api/teachers', 'GET', undefined, login.cookie)).status, 403);
 });
 
+test('a teacher cannot be double-booked for the same trial time', async () => {
+  const db = new DatabaseSync(dbPath);
+  const passwordHash = db.prepare("SELECT password_hash FROM users WHERE role = 'admin' LIMIT 1").get().password_hash;
+  db.prepare("INSERT INTO users (id, email, name, role, password_hash, created_at) VALUES (?, ?, ?, 'teacher', ?, ?)").run('teacher-busy', 'busy-teacher@example.test', 'Busy Teacher', passwordHash, new Date().toISOString());
+  db.close();
+  const first = await createLead('Teacher busy first');
+  const second = await createLead('Teacher busy second');
+  const scheduledAt = '2030-07-01T09:00:00.000Z';
+  assert.equal((await request(`/api/inquiries/${first.inquiryId}/trial`, 'POST', { scheduledAt, teacherId: 'teacher-busy' })).status, 201);
+  const conflict = await request(`/api/inquiries/${second.inquiryId}/trial`, 'POST', { scheduledAt, teacherId: 'teacher-busy' });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.code, 'TEACHER_BUSY');
+});
+
+test('new lead warns about duplicate phone and allows explicit override', async () => {
+  const first = await createLead('Duplicate student', '0400123456');
+  const duplicate = await request('/api/leads', 'POST', {
+    studentName: 'Duplicate student copy',
+    guardianName: 'Test parent',
+    guardianPhone: '0400123456',
+    channel: '电话',
+    summary: '重复电话测试',
+  });
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.body.code, 'DUPLICATE_STUDENT');
+  assert.ok(duplicate.body.matches.some((item) => item.id === first.studentId));
+
+  const sameNames = await request('/api/leads', 'POST', {
+    studentName: 'Duplicate student',
+    guardianName: 'Test parent',
+    guardianPhone: '0400123457',
+    channel: '微信',
+    summary: '重复姓名测试',
+  });
+  assert.equal(sameNames.status, 409);
+  assert.equal(sameNames.body.code, 'DUPLICATE_STUDENT');
+
+  const override = await request('/api/leads', 'POST', {
+    studentName: 'Duplicate student copy',
+    guardianName: 'Test parent',
+    guardianPhone: '0400123456',
+    channel: '电话',
+    summary: '确认仍然创建',
+    allowDuplicate: true,
+  });
+  assert.equal(override.status, 201);
+});
+
+test('trial cancellation preserves its reason and allows a new booking', async () => {
+  const lead = await createLead('Cancelled trial');
+  const trial = await request(`/api/inquiries/${lead.inquiryId}/trial`, 'POST', { scheduledAt: '2030-06-01T00:00:00.000Z' });
+  const change = { expectedScheduledAt: '2030-06-01T00:00:00.000Z', reason: '家长时间冲突' };
+  const key = { 'X-Idempotency-Key': 'cancel-trial-1' };
+  assert.equal((await request(`/api/trials/${trial.body.trialId}/cancel`, 'POST', { ...change, reason: ' ' }, cookie, key)).status, 400);
+  assert.equal((await request(`/api/trials/${trial.body.trialId}/cancel`, 'POST', { ...change, expectedScheduledAt: '2030-06-02T00:00:00.000Z' }, cookie, key)).status, 409);
+  const other = await request('/api/auth/login', 'POST', { email: 'ben@austin.edu', password: 'demo123' }, '');
+  assert.equal((await request(`/api/trials/${trial.body.trialId}/cancel`, 'POST', change, other.cookie, key)).status, 403);
+  assert.equal((await request(`/api/trials/${trial.body.trialId}/cancel`, 'POST', change, cookie, key)).status, 200);
+  assert.equal((await request(`/api/trials/${trial.body.trialId}/cancel`, 'POST', change, cookie, key)).status, 200);
+  assert.equal((await request(`/api/trials/${trial.body.trialId}/cancel`, 'POST', { ...change, reason: '其他原因' }, cookie, key)).status, 409);
+  assert.equal((await request(`/api/trials/${trial.body.trialId}/cancel`, 'POST', change, cookie, { 'X-Idempotency-Key': 'cancel-trial-2' })).status, 409);
+  const detail = await request(`/api/students/${lead.studentId}`);
+  assert.equal(detail.body.trials[0].status, 'cancelled');
+  assert.equal(detail.body.trialCancellations[0].reason, change.reason);
+  assert.equal(detail.body.inquiries[0].status, 'contacted');
+  const next = await request(`/api/inquiries/${lead.inquiryId}/trial`, 'POST', { scheduledAt: '2030-06-02T00:00:00.000Z' });
+  assert.equal(next.status, 201);
+});
+
+test('student contact edits preserve ownership and reject stale changes', async () => {
+  const lead = await createLead('Original name', '0400000000');
+  const update = { name: 'Updated name', guardianName: 'Updated parent', guardianPhone: '0411111111', expected: { name: 'Original name', guardianName: 'Test parent', guardianPhone: '0400000000' } };
+  const other = await request('/api/auth/login', 'POST', { email: 'ben@austin.edu', password: 'demo123' }, '');
+  assert.equal((await request(`/api/students/${lead.studentId}`, 'PATCH', update, other.cookie)).status, 403);
+  assert.equal((await request(`/api/students/${lead.studentId}`, 'PATCH', update)).status, 200);
+  assert.equal((await request(`/api/students/${lead.studentId}`, 'PATCH', update)).status, 409);
+  const detail = await request(`/api/students/${lead.studentId}`);
+  assert.equal(detail.body.student.name, 'Updated name');
+  assert.equal(detail.body.student.guardianName, 'Updated parent');
+  assert.equal(detail.body.student.guardianPhone, '0411111111');
+  assert.equal(detail.body.inquiries[0].studentName, 'Updated name');
+});
+
+test('new inquiries reopen closed students without erasing historical decisions', async () => {
+  const lead = await createLead('Returning student');
+  const input = { channel: '电话', summary: '再次咨询周末课程' };
+  const key = { 'X-Idempotency-Key': 'returning-inquiry-1' };
+  assert.equal((await request(`/api/students/${lead.studentId}/inquiries`, 'POST', input, cookie, key)).status, 409);
+  const trial = await request(`/api/inquiries/${lead.inquiryId}/trial`, 'POST', { scheduledAt: '2030-06-03T00:00:00.000Z' });
+  assert.equal((await request(`/api/trials/${trial.body.trialId}/complete`, 'POST', { outcome: 'not_interested', notes: '原先不考虑' })).status, 200);
+  const reopened = await request(`/api/students/${lead.studentId}/inquiries`, 'POST', input, cookie, key);
+  assert.equal(reopened.status, 201);
+  const retry = await request(`/api/students/${lead.studentId}/inquiries`, 'POST', input, cookie, key);
+  assert.equal(retry.status, 201);
+  assert.equal(retry.body.inquiryId, reopened.body.inquiryId);
+  assert.equal((await request(`/api/students/${lead.studentId}/inquiries`, 'POST', { ...input, summary: '不同内容' }, cookie, key)).status, 409);
+  const detail = await request(`/api/students/${lead.studentId}`);
+  assert.equal(detail.body.student.status, 'lead');
+  assert.ok(detail.body.inquiries.some((inquiry) => inquiry.id === lead.inquiryId && inquiry.status === 'lost'));
+  assert.ok(detail.body.inquiries.some((inquiry) => inquiry.id === reopened.body.inquiryId && inquiry.status === 'new'));
+  const other = await request('/api/auth/login', 'POST', { email: 'ben@austin.edu', password: 'demo123' }, '');
+  assert.equal((await request(`/api/students/${lead.studentId}/inquiries`, 'POST', input, other.cookie, { 'X-Idempotency-Key': 'other-inquiry' })).status, 403);
+});
+
 test('completion cannot overwrite a trial rescheduled while AI is running', async () => {
   const lead = await createLead('Reschedule race');
   const scheduled = await request(`/api/inquiries/${lead.inquiryId}/trial`, 'POST', { scheduledAt: '2030-05-01T00:00:00.000Z' });
@@ -167,6 +273,22 @@ test('completion cannot overwrite a trial rescheduled while AI is running', asyn
   const detail = await request(`/api/students/${lead.studentId}`);
   assert.equal(detail.body.trials[0].status, 'scheduled');
   assert.equal(detail.body.trials[0].scheduledAt, '2030-05-02T00:00:00.000Z');
+  assert.equal(detail.body.followUps.length, 0);
+  raceModelStarted = undefined;
+});
+
+test('completion cannot overwrite a trial cancelled while AI is running', async () => {
+  const lead = await createLead('Cancellation race');
+  const scheduled = await request(`/api/inquiries/${lead.inquiryId}/trial`, 'POST', { scheduledAt: '2030-05-01T00:00:00.000Z' });
+  const modelStarted = new Promise((resolve) => { raceModelStarted = resolve; });
+  const completion = request(`/api/trials/${scheduled.body.trialId}/complete`, 'POST', { outcome: 'interested', notes: 'reschedule race' });
+  await modelStarted;
+  const cancelled = await request(`/api/trials/${scheduled.body.trialId}/cancel`, 'POST', { expectedScheduledAt: '2030-05-01T00:00:00.000Z', reason: '临时取消' }, cookie, { 'X-Idempotency-Key': 'cancel-race' });
+  assert.equal(cancelled.status, 200);
+  assert.equal((await completion).status, 409);
+  const detail = await request(`/api/students/${lead.studentId}`);
+  assert.equal(detail.body.trials[0].status, 'cancelled');
+  assert.equal(detail.body.trialCancellations[0].reason, '临时取消');
   assert.equal(detail.body.followUps.length, 0);
   raceModelStarted = undefined;
 });
@@ -200,7 +322,7 @@ test('marking a student lost closes pending follow-ups', async () => {
 });
 
 test('follow-up notes and the next action are persisted and ownership is enforced', async () => {
-  const lead = await createLead('Follow-up student');
+  const lead = await createLead('Follow-up student', '0400000000');
   const trial = await request(`/api/inquiries/${lead.inquiryId}/trial`, 'POST', { scheduledAt: '2030-03-01T00:00:00.000Z' });
   const completed = await request(`/api/trials/${trial.body.trialId}/complete`, 'POST', { outcome: 'interested', notes: 'Trial went well' });
   assert.equal(completed.status, 200);
@@ -285,6 +407,12 @@ test('enrollment intent closes remaining work and records the decision', async (
   assert.equal(detail.body.inquiries[0].status, 'converted');
   assert.ok(detail.body.followUps.some((item) => item.resultOutcome === 'converted'));
   assert.ok(!detail.body.followUps.some((item) => item.status === 'pending'));
+  const reopened = await request(`/api/students/${lead.studentId}/inquiries`, 'POST', { channel: '电话', summary: '重新咨询' }, cookie, { 'X-Idempotency-Key': 'intent-return' });
+  assert.equal(reopened.status, 201);
+  const returned = await request(`/api/students/${lead.studentId}`);
+  assert.equal(returned.body.student.status, 'lead');
+  assert.ok(returned.body.inquiries.some((inquiry) => inquiry.id === lead.inquiryId && inquiry.status === 'converted'));
+  assert.ok(returned.body.inquiries.some((inquiry) => inquiry.id === reopened.body.inquiryId && inquiry.status === 'new'));
 });
 
 test('repeated failed logins are rate-limited', async () => {
