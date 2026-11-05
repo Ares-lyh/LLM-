@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState, type ReactNode } from 'react';
+import { FormEvent, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { melbourneLocalToInstant } from './shared/time';
 import { CreateTeacherForm, RescheduleForm, TeacherAssignment, TeacherSelector } from './Scheduling';
 import { CancelTrialForm, ReturningInquiryForm, StudentEditForm } from './StudentOperations';
@@ -8,6 +8,43 @@ type LoginState = { email: string; password: string };
 type Dialog = 'lead' | 'trial' | 'result' | 'followup' | 'student' | 'reschedule' | 'cancel-trial' | 'teacher' | null;
 type View = 'overview' | 'students' | 'tasks';
 type ApiRequestError = Error & { code?: string; details?: unknown };
+
+function useDebouncedValue<T>(value: T, delay: number) {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
+}
+
+function useThrottledCallback<T extends (...args: never[]) => void>(callback: T, wait: number) {
+  const callbackRef = useRef(callback);
+  const lastCallRef = useRef(0);
+  const timerRef = useRef<number | null>(null);
+  useEffect(() => { callbackRef.current = callback; }, [callback]);
+  useEffect(() => () => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+  }, []);
+  return useCallback(((...args: Parameters<T>) => {
+    const now = Date.now();
+    const remaining = wait - (now - lastCallRef.current);
+    if (remaining <= 0) {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+      lastCallRef.current = now;
+      callbackRef.current(...args);
+      return;
+    }
+    if (timerRef.current === null) {
+      timerRef.current = window.setTimeout(() => {
+        timerRef.current = null;
+        lastCallRef.current = Date.now();
+        callbackRef.current(...args);
+      }, remaining);
+    }
+  }) as (...args: Parameters<T>) => void, [wait]);
+}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -40,8 +77,11 @@ export function App() {
   const [toast, setToast] = useState('');
   const [loadError, setLoadError] = useState('');
   const [view, setView] = useState<View>('overview');
+  const dashboardRequestRef = useRef<Promise<void> | null>(null);
 
   async function loadDashboard() {
+    if (dashboardRequestRef.current) return dashboardRequestRef.current;
+    const request = (async () => {
     setRefreshing(true);
     setLoadError('');
     try {
@@ -54,7 +94,16 @@ export function App() {
       setRefreshing(false);
       setLoading(false);
     }
+    })();
+    dashboardRequestRef.current = request;
+    try {
+      await request;
+    } finally {
+      if (dashboardRequestRef.current === request) dashboardRequestRef.current = null;
+    }
   }
+
+  const refreshDashboard = useThrottledCallback(() => { void loadDashboard(); }, 700);
 
   useEffect(() => {
     api<{ user: UserDto }>('/api/auth/me').then(({ user: me }) => {
@@ -87,9 +136,9 @@ export function App() {
     setDashboard(null);
   }
 
-  if (loading) return <div className="center-state"><div className="loader" /><span>正在打开工作台…</span></div>;
+  if (loading) return <DashboardSkeleton />;
   if (!user) return <LoginPage login={login} setLogin={setLogin} error={loginError} onSubmit={submitLogin} />;
-  if (!dashboard) return <div className="center-state"><strong>工作台暂时无法加载</strong><span>{loadError}</span><button className="secondary-button" onClick={loadDashboard}>重试</button></div>;
+  if (!dashboard) return <div className="center-state"><strong>工作台暂时无法加载</strong><span>{loadError}</span><button className="secondary-button" onClick={refreshDashboard}>重试</button></div>;
 
   const pending = dashboard?.followUps.filter((item) => item.status === 'pending') ?? [];
   const trials = dashboard?.trials.filter((item) => item.status === 'scheduled') ?? [];
@@ -110,7 +159,7 @@ export function App() {
       <main className="main-content">
         <header className="topbar"><div><p className="eyebrow">{new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Melbourne', weekday: 'long', day: '2-digit', month: 'short', year: 'numeric' }).format(new Date())}</p><h1>你好，{user.name.split(' ')[0]} <span className="wave">✦</span></h1><p className="subtitle">这里是你今天需要关注的学生动态。</p></div><div className="top-actions"><div className="avatar">{user.name.slice(0, 1)}</div><div className="user-meta"><strong>{user.name}</strong><span>Admin · Melbourne</span></div><button className="logout" onClick={logout}>退出</button></div></header>
         {toast && <div className="toast" role="status" aria-live="polite">{toast}<button aria-label="关闭提示" onClick={() => setToast('')}>×</button></div>}
-        <section className="hero-row"><div><p className="section-kicker">{view === 'overview' ? 'OVERVIEW' : view === 'students' ? 'STUDENTS & INQUIRIES' : 'TASK CENTER'}</p><h2>{view === 'overview' ? '今天的工作台' : view === 'students' ? '学生与咨询' : '任务中心'}</h2></div><div className="hero-actions"><button className="secondary-button" onClick={() => setDialog('teacher')}>＋ 新建老师</button><button className="secondary-button" onClick={() => loadDashboard()} disabled={refreshing}>↻ {refreshing ? '刷新中' : '刷新'}</button><button className="primary-button" onClick={() => setDialog('lead')}>＋ 新建咨询</button></div></section>{loadError && <div className="form-error">{loadError} <button className="text-button" onClick={loadDashboard}>重试</button></div>}
+        <section className="hero-row"><div><p className="section-kicker">{view === 'overview' ? 'OVERVIEW' : view === 'students' ? 'STUDENTS & INQUIRIES' : 'TASK CENTER'}</p><h2>{view === 'overview' ? '今天的工作台' : view === 'students' ? '学生与咨询' : '任务中心'}</h2></div><div className="hero-actions"><button className="secondary-button" onClick={() => setDialog('teacher')}>＋ 新建老师</button><button className="secondary-button" onClick={refreshDashboard} disabled={refreshing}>↻ {refreshing ? '刷新中' : '刷新'}</button><button className="primary-button" onClick={() => setDialog('lead')}>＋ 新建咨询</button></div></section>{loadError && <div className="form-error">{loadError} <button className="text-button" onClick={refreshDashboard}>重试</button></div>}
         {view === 'overview' && <>
           <section className="metrics-grid"><Metric label="待跟进" value={dashboard.counts.pendingFollowUps} detail={dashboard.counts.overdueFollowUps ? `${dashboard.counts.overdueFollowUps} 条已逾期` : '全部按时'} tone="amber" icon="↗" /><Metric label="今日试听" value={dashboard.counts.todayTrials} detail="Melbourne 时间" tone="blue" icon="◷" /><Metric label="我的学生" value={dashboard.counts.students} detail="持续跟进中" tone="green" icon="♙" /></section>
           <div className="content-grid"><section className="panel focus-panel"><div className="panel-heading"><div><p className="section-kicker">ACTION QUEUE</p><h3>优先处理</h3></div><span className="count-pill">{pending.length + trials.length} 件</span></div><div className="queue-list">{pending.length === 0 && trials.length === 0 ? <EmptyState title="今天没有待办" text="新建一条咨询，开始你的第一条跟进。" action="新建咨询" onClick={() => setDialog('lead')} /> : <>{pending.map((item) => <FollowUpCard key={item.id} item={item} onComplete={() => { setSelectedFollowUp(item); setDialog('followup'); }} onDetail={() => { setSelectedStudent(item.studentId); setDialog('student'); }} />)}{trials.map((item) => <TrialCard key={item.id} trial={item} onSchedule={() => { setSelectedTrial(item); setDialog('result'); }} onReschedule={() => { setSelectedTrial(item); setDialog('reschedule'); }} onCancel={() => { setSelectedTrial(item); setDialog('cancel-trial'); }} />)}</>}</div></section><InquiryList inquiries={inquiries} onDetail={(id) => { setSelectedStudent(id); setDialog('student'); }} onSchedule={(item) => { setSelectedTrial({ id: '', inquiryId: item.id, studentId: item.studentId, studentName: item.studentName, scheduledAt: '', status: 'scheduled', outcome: null, notes: null, teacherName: null }); setDialog('trial'); }} /></div>
@@ -136,16 +185,24 @@ function NavItem({ active, icon, label, onClick }: { active: boolean; icon: stri
   return <button type="button" className={`nav-item ${active ? 'active' : ''}`} aria-current={active ? 'page' : undefined} onClick={onClick}><span aria-hidden="true">{icon}</span>{label}</button>;
 }
 
+function DashboardSkeleton() {
+  return <div className="skeleton-shell" role="status" aria-live="polite" aria-label="正在加载工作台">
+    <aside className="skeleton-sidebar"><div className="skeleton-brand"><span className="skeleton-block skeleton-brand-mark" /><span className="skeleton-block skeleton-brand-name" /></div><span className="skeleton-block skeleton-nav-label" /><div className="skeleton-nav-list"><span className="skeleton-block skeleton-nav-item" /><span className="skeleton-block skeleton-nav-item" /><span className="skeleton-block skeleton-nav-item" /></div><span className="skeleton-block skeleton-tip" /></aside>
+    <main className="skeleton-main"><div className="skeleton-topbar"><div><span className="skeleton-block skeleton-eyebrow" /><span className="skeleton-block skeleton-title" /><span className="skeleton-block skeleton-subtitle" /></div><div className="skeleton-user"><span className="skeleton-block skeleton-avatar" /><span className="skeleton-block skeleton-user-name" /></div></div><div className="skeleton-hero"><div><span className="skeleton-block skeleton-eyebrow" /><span className="skeleton-block skeleton-heading" /></div><div className="skeleton-actions"><span className="skeleton-block skeleton-action" /><span className="skeleton-block skeleton-action" /></div></div><div className="skeleton-metrics"><span className="skeleton-block skeleton-metric" /><span className="skeleton-block skeleton-metric" /><span className="skeleton-block skeleton-metric" /></div><div className="skeleton-grid"><div className="skeleton-panel"><span className="skeleton-block skeleton-panel-heading" /><span className="skeleton-block skeleton-row" /><span className="skeleton-block skeleton-row" /><span className="skeleton-block skeleton-row" /></div><div className="skeleton-panel"><span className="skeleton-block skeleton-panel-heading" /><span className="skeleton-block skeleton-row" /><span className="skeleton-block skeleton-row" /><span className="skeleton-block skeleton-row" /></div></div></main>
+  </div>;
+}
+
 function StudentDirectory({ inquiries, onDetail, onSchedule }: { inquiries: InquiryDto[]; onDetail: (id: string) => void; onSchedule: (item: InquiryDto) => void }) {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<'all' | InquiryDto['status']>('all');
   const [page, setPage] = useState(0);
+  const debouncedSearch = useDebouncedValue(search, 220);
   const latestByStudent = new Map<string, InquiryDto>();
   for (const inquiry of inquiries) {
     if (!latestByStudent.has(inquiry.studentId)) latestByStudent.set(inquiry.studentId, inquiry);
   }
   const students = Array.from(latestByStudent.values());
-  const normalized = search.trim().toLowerCase();
+  const normalized = debouncedSearch.trim().toLowerCase();
   const filtered = students.filter((item) => {
     const matchesSearch = !normalized || [item.studentName, item.summary, item.channel].some((value) => value.toLowerCase().includes(normalized));
     return matchesSearch && (status === 'all' || item.status === status);
@@ -154,7 +211,7 @@ function StudentDirectory({ inquiries, onDetail, onSchedule }: { inquiries: Inqu
   const current = Math.min(page, pages - 1);
   const currentRows = filtered.slice(current * 10, current * 10 + 10);
 
-  function exportCsv() {
+  const exportCsv = useThrottledCallback(() => {
     const header = ['学生姓名', '最近咨询', '来源', '状态', '最近更新时间'];
     const rows = filtered.map((item) => [item.studentName, item.summary, item.channel, statusLabel(item.status), formatDate(item.createdAt)]);
     const csv = [header, ...rows].map((row) => row.map((value) => `"${value.replaceAll('"', '""')}"`).join(',')).join('\r\n');
@@ -165,12 +222,12 @@ function StudentDirectory({ inquiries, onDetail, onSchedule }: { inquiries: Inqu
     anchor.download = `学生咨询-${new Date().toISOString().slice(0, 10)}.csv`;
     anchor.click();
     URL.revokeObjectURL(url);
-  }
+  }, 900);
 
   return <section className="panel directory-panel">
     <div className="panel-heading directory-heading"><div><p className="section-kicker">STUDENT DIRECTORY</p><h3>学生与咨询</h3><p className="panel-help">按学生汇总最近一条咨询，打开详情查看完整历史。</p></div><button className="secondary-button" type="button" onClick={exportCsv} disabled={filtered.length === 0}>导出 CSV</button></div>
     <div className="directory-filters"><input className="inquiry-search" type="search" aria-label="搜索学生、咨询内容或来源" placeholder="搜索学生、咨询内容或来源" value={search} onChange={(event) => { setSearch(event.target.value); setPage(0); }} /><select aria-label="按状态筛选" value={status} onChange={(event) => { setStatus(event.target.value as typeof status); setPage(0); }}><option value="all">全部状态</option><option value="new">新咨询</option><option value="contacted">已联系</option><option value="trial_scheduled">已安排试听</option><option value="converted">有报名意向</option><option value="lost">已流失</option></select></div>
-    <div className="student-table" role="table" aria-label="学生与咨询列表"><div className="student-table-row student-table-head" role="row"><span>学生</span><span>最近咨询</span><span>来源</span><span>状态</span><span>操作</span></div>{currentRows.map((item) => <div className="student-table-row" role="row" key={item.studentId}><button className="student-link" onClick={() => onDetail(item.studentId)}>{item.studentName}</button><span className="table-summary">{item.summary}</span><span className="table-muted">{item.channel}</span><StatusChip value={item.status} /><div className="table-actions">{item.status === 'new' || item.status === 'contacted' ? <button className="small-action" onClick={() => onSchedule(item)}>安排试听</button> : <button className="small-action" onClick={() => onDetail(item.studentId)}>查看详情</button>}</div></div>)}{currentRows.length === 0 && <EmptyState title="没有匹配的学生" text={search || status !== 'all' ? '请调整搜索词或筛选条件。' : '登记第一位学生后，列表会显示在这里。'} />}</div>
+    <div className="student-table" role="table" aria-busy={search !== debouncedSearch} aria-label="学生与咨询列表"><div className="student-table-row student-table-head" role="row"><span>学生</span><span>最近咨询</span><span>来源</span><span>状态</span><span>操作</span></div>{currentRows.map((item) => <div className="student-table-row" role="row" key={item.studentId}><button className="student-link" onClick={() => onDetail(item.studentId)}>{item.studentName}</button><span className="table-summary">{item.summary}</span><span className="table-muted">{item.channel}</span><StatusChip value={item.status} /><div className="table-actions">{item.status === 'new' || item.status === 'contacted' ? <button className="small-action" onClick={() => onSchedule(item)}>安排试听</button> : <button className="small-action" onClick={() => onDetail(item.studentId)}>查看详情</button>}</div></div>)}{currentRows.length === 0 && <EmptyState title="没有匹配的学生" text={search || status !== 'all' ? '请调整搜索词或筛选条件。' : '登记第一位学生后，列表会显示在这里。'} />}</div>
     <div className="directory-footer"><span>共 {filtered.length} 名学生</span>{pages > 1 && <div className="pagination"><button className="small-action" disabled={current === 0} onClick={() => setPage(current - 1)}>上一页</button><span>{current + 1} / {pages}</span><button className="small-action" disabled={current + 1 >= pages} onClick={() => setPage(current + 1)}>下一页</button></div>}</div>
   </section>;
 }
@@ -213,12 +270,13 @@ function Metric({ label, value, detail, tone, icon }: { label: string; value: nu
 function InquiryList({ inquiries, onDetail, onSchedule }: { inquiries: InquiryDto[]; onDetail: (id: string) => void; onSchedule: (item: InquiryDto) => void }) {
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(0);
-  const filtered = inquiries.filter((item) => item.studentName.toLowerCase().includes(search.trim().toLowerCase()));
+  const debouncedSearch = useDebouncedValue(search, 220);
+  const filtered = inquiries.filter((item) => item.studentName.toLowerCase().includes(debouncedSearch.trim().toLowerCase()));
   const pages = Math.max(1, Math.ceil(filtered.length / 8));
   const current = Math.min(page, pages - 1);
   return <section className="panel timeline-panel"><div className="panel-heading"><div><p className="section-kicker">RECENT ACTIVITY</p><h3>最近咨询</h3></div></div>
     <input className="inquiry-search" type="search" aria-label="搜索学生" placeholder="搜索学生姓名" value={search} onChange={(e) => { setSearch(e.target.value); setPage(0); }} />
-    <div className="activity-list">{filtered.slice(current * 8, current * 8 + 8).map((item, index) => <div className="activity-row" key={item.id}><div className={`activity-dot dot-${index % 3}`} /><div className="activity-copy"><button className="student-link" onClick={() => onDetail(item.studentId)}>{item.studentName}</button><span>{item.summary}</span></div>{item.status === 'new' || item.status === 'contacted' ? <button className="small-action" onClick={() => onSchedule(item)}>安排试听</button> : <StatusChip value={item.status} />}</div>)}{filtered.length === 0 && <EmptyState title={search ? '没有匹配的学生' : '还没有咨询'} text={search ? '试试其他姓名。' : '登记第一位学生后，活动会显示在这里。'} />}</div>
+    <div className="activity-list" aria-busy={search !== debouncedSearch}>{filtered.slice(current * 8, current * 8 + 8).map((item, index) => <div className="activity-row" key={item.id}><div className={`activity-dot dot-${index % 3}`} /><div className="activity-copy"><button className="student-link" onClick={() => onDetail(item.studentId)}>{item.studentName}</button><span>{item.summary}</span></div>{item.status === 'new' || item.status === 'contacted' ? <button className="small-action" onClick={() => onSchedule(item)}>安排试听</button> : <StatusChip value={item.status} />}</div>)}{filtered.length === 0 && <EmptyState title={search ? '没有匹配的学生' : '还没有咨询'} text={search ? '试试其他姓名。' : '登记第一位学生后，活动会显示在这里。'} />}</div>
     {pages > 1 && <div className="pagination"><button className="small-action" disabled={current === 0} onClick={() => setPage(current - 1)}>上一页</button><span>{current + 1} / {pages}</span><button className="small-action" disabled={current + 1 >= pages} onClick={() => setPage(current + 1)}>下一页</button></div>}
   </section>;
 }
@@ -228,6 +286,10 @@ function TrialCard({ trial, onSchedule, onReschedule, onCancel }: { trial: Trial
 function StatusChip({ value }: { value: string }) { const map: Record<string, string> = { new: '新咨询', contacted: '已联系', trial_scheduled: '已安排试听', converted: '有报名意向', lost: '已流失' }; return <span className={`status-chip status-${value}`}>{map[value] ?? value}</span>; }
 function EmptyState({ title, text, action, onClick }: { title: string; text: string; action?: string; onClick?: () => void }) { return <div className="empty-state"><div className="empty-symbol">○</div><strong>{title}</strong><p>{text}</p>{action && <button className="text-button" onClick={onClick}>{action} →</button>}</div>; }
 function formatDate(value: string) { return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Australia/Melbourne', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value)); }
+
+function StudentDetailSkeleton() {
+  return <div className="student-detail-skeleton" role="status" aria-live="polite" aria-label="正在加载学生详情"><span className="skeleton-block skeleton-contact" /><span className="skeleton-block skeleton-detail-heading" /><span className="skeleton-block skeleton-detail-line" /><span className="skeleton-block skeleton-detail-line short" /><span className="skeleton-block skeleton-detail-heading" /><span className="skeleton-block skeleton-history" /><span className="skeleton-block skeleton-history" /></div>;
+}
 
 function LeadDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [form, setForm] = useState({ studentName: '', guardianName: '', guardianPhone: '', channel: '微信', summary: '' });
@@ -333,7 +395,7 @@ function StudentDialog({ id, onClose, onChanged }: { id: string; onClose: () => 
     return () => { active = false; };
   }, [id, attempt]);
   return <Dialog title={detail?.student.name ?? '学生详情'} eyebrow="STUDENT" onClose={onClose}>
-    {error ? <div className="form-error" role="alert">{error} <button className="text-button" onClick={() => setAttempt((n) => n + 1)}>重试</button></div> : !detail ? <p>正在加载…</p> : <div className="student-detail">
+    {error ? <div className="form-error" role="alert">{error} <button className="text-button" onClick={() => setAttempt((n) => n + 1)}>重试</button></div> : !detail ? <StudentDetailSkeleton /> : <div className="student-detail">
       <div className="contact-row"><span>家长</span><strong>{detail.student.guardianName}</strong><a href={`tel:${detail.student.guardianPhone}`}>{detail.student.guardianPhone}</a></div>
       <div className="student-actions"><button className="small-action" onClick={() => setAction(action === 'edit' ? null : 'edit')}>编辑资料</button><button className="small-action" onClick={() => setAction(action === 'inquiry' ? null : 'inquiry')}>新增咨询</button></div>
       {action === 'edit' && <StudentEditForm api={api} student={detail.student} onSaved={refresh} onClose={() => setAction(null)} />}

@@ -15,7 +15,7 @@ export function TeacherSelector({ api, value, onChange, placeholder = '暂不分
     return () => { active = false; };
   }, [api, attempt]);
   if (error) return <div className="form-error" role="alert">{error} <button type="button" className="text-button" onClick={() => setAttempt(attempt + 1)}>重试</button></div>;
-  if (!teachers) return <p>正在加载老师…</p>;
+  if (!teachers) return <div className="field-skeleton" role="status" aria-live="polite" aria-label="正在加载老师列表"><span className="skeleton-label">负责老师</span><span className="skeleton-block skeleton-input" /></div>;
   return <label>负责老师<select value={value} onChange={(event) => onChange(event.target.value)}><option value="">{placeholder}</option>{teachers.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.name}</option>)}</select>{teachers.length === 0 && <small>暂无老师，请先创建老师账号。</small>}</label>;
 }
 
