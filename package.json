@@ -1,0 +1,30 @@
+{
+  "name": "student-management-system",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev:web": "vite --host 127.0.0.1",
+    "dev:api": "npm run build:server && node dist-server/server/index.js",
+    "build": "tsc -b && npm run build:server && vite build",
+    "build:server": "tsc -p tsconfig.server.json --noEmit false",
+    "type-check": "tsc -b --pretty false",
+    "test": "npm run build:server && node --test tests/*.test.mjs",
+    "start": "node dist-server/server/index.js",
+    "seed": "npm run build:server && node dist-server/server/seed.js"
+  },
+  "dependencies": {
+    "@js-temporal/polyfill": "^0.5.1",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.1.16",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12"
+  }
+}

@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>技术作业 — 学生管理系统（从需求开始）</title>
+<style>
+  :root { --ink:#1c2530; --muted:#5b6672; --line:#d9dee4; --accent:#1f5f8b; --accent-soft:#e8f0f7; --warn:#8a5a00; --warn-soft:#fff5df; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#fff; color:var(--ink); font-family:"Noto Sans SC","PingFang SC","Microsoft YaHei","Helvetica Neue",Arial,sans-serif; line-height:1.75; }
+  .page { max-width:820px; margin:0 auto; padding:48px 28px 80px; }
+  header { border-bottom:2px solid var(--ink); padding-bottom:24px; margin-bottom:32px; }
+  header .company { color:var(--muted); margin:0 0 4px; }
+  header h1 { margin:0 0 6px; font-size:1.9rem; line-height:1.25; }
+  header .sub { color:var(--muted); margin:0 0 16px; }
+  .facts { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px 24px; margin:0; }
+  .facts div { border-left:3px solid var(--accent); padding-left:12px; }
+  .facts dt { color:var(--muted); font-size:.85rem; }
+  .facts dd { margin:0; font-weight:600; }
+  h2 { font-size:1.35rem; margin:44px 0 14px; padding-bottom:8px; border-bottom:1px solid var(--line); }
+  h3 { font-size:1.05rem; margin:22px 0 8px; color:var(--accent); }
+  p { margin:0 0 12px; }
+  ul, ol { margin:0 0 14px; padding-left:22px; }
+  li { margin-bottom:5px; }
+  .note { color:var(--muted); font-size:.95rem; }
+  .callout { background:var(--accent-soft); border-left:4px solid var(--accent); padding:14px 18px; margin:16px 0; border-radius:0 4px 4px 0; }
+  .callout p:last-child { margin-bottom:0; }
+  .warn { background:var(--warn-soft); border-left:4px solid var(--warn); padding:14px 18px; margin:16px 0; border-radius:0 4px 4px 0; }
+  .warn p:last-child { margin-bottom:0; }
+  .scenario { border:1.5px solid var(--ink); border-radius:8px; padding:22px 26px; margin:18px 0 24px; font-size:1.02rem; }
+  .scenario p:last-child { margin-bottom:0; }
+  code { font-family:"SFMono-Regular",Menlo,Consolas,monospace; font-size:.88em; background:#f4f6f8; padding:1px 6px; border-radius:3px; }
+  table { width:100%; border-collapse:collapse; margin:12px 0 20px; font-size:.95rem; }
+  th, td { text-align:left; vertical-align:top; padding:10px 12px; border-bottom:1px solid var(--line); }
+  th { background:#f4f6f8; font-weight:600; }
+  @media print { .page { padding:0; max-width:none; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <p class="company">Austin Education · Full-Stack Software Engineer</p>
+  <h1>技术作业：学生管理系统</h1>
+  <dl class="facts">
+    <div><dt>预计用时</dt><dd>6–10 小时</dd></div>
+    <div><dt>提交方式</dt><dd>GitHub 仓库链接（文档放在仓库里）</dd></div>
+    <div><dt>截止</dt><dd>面试开始前 1 小时</dd></div>
+    <div><dt>展示时长</dt><dd>约 45 分钟</dd></div>
+  </dl>
+</header>
+
+<section>
+  <h2>1. 背景</h2>
+  <p>这不是一个功能清单，而是一段业务描述。<strong>我们故意没有把需求写清楚</strong>，因为真实工作中需求也从来不会是清楚的。你需要自己理解这个业务、决定要做什么、决定不做什么。</p>
+
+  <div class="scenario">
+    <p>我们是一家教育机构。目前有 <strong>10 名 admin</strong>（课程顾问 / 教务），每人手上大约跟进 <strong>100 名学生</strong>。有 <strong>20 名老师</strong>，每周固定开 <strong>60 节课</strong>左右。</p>
+    <p>一个学生的完整生命周期大致是：家长或学生来<strong>咨询</strong> → 安排一节<strong>试听课</strong> → 决定<strong>报名</strong>并购买课时 → 被<strong>排进</strong>每周的固定班级 → 每周<strong>上课</strong>、老师记录<strong>出勤和课堂反馈</strong> → 课时快用完时<strong>续费</strong>，或者<strong>流失</strong>。</p>
+    <p>现在这些全靠 Excel 和微信群在管，经常出问题：学生被排进了时间冲突的两个班、试听完没人跟进、课时用完了才发现没提醒续费、老师不知道今天班里谁是新来的。</p>
+    <p>我们想要一个系统，<strong>从咨询试听开始，把这些学生好好管起来</strong>。</p>
+  </div>
+
+  <p>以上就是你能拿到的全部需求。其余一切——谁能看什么、班级怎么定义、课时怎么扣、冲突怎么算、admin 之间的学生能不能互相看——都需要你自己做判断。</p>
+</section>
+
+<section>
+  <h2>2. 你要交付什么</h2>
+  <p>开始前先 <code>git init</code>、设为 public 并把链接发给我们（见常见问题）。两部分，<strong>缺一不可</strong>。只有文档没有代码，或只有代码没有文档，都视为未完成。</p>
+
+  <h3>Part A · 设计文档（放在仓库的 <code>DESIGN.md</code>）</h3>
+  <p>不超过 3 页（草图不计）。我们想看到你怎么思考，不是排版。至少包含：</p>
+  <ol>
+    <li><strong>你对这个业务的理解</strong>：有哪些角色、各自关心什么、核心流程是什么。用你自己的话写，不要复述背景。</li>
+    <li><strong>你决定要解决的问题和不解决的问题</strong>：这个系统第一版应该先做什么？为什么？哪些你认为重要但这次故意不做？</li>
+    <li><strong>数据模型</strong>：实体、关系、关键字段。ER 图或表格都可以。特别说明：学生和 admin 的关系、班级和课的关系、课时是怎么记录和扣减的。</li>
+    <li><strong>关键规则</strong>：至少列出 5 条你认为系统必须强制执行的业务规则（比如排课冲突、课时不足、试听只能一次……），并说明在哪一层执行。</li>
+    <li><strong>你的假设和问题</strong>：背景里没说清楚、你自己做了假设的地方；以及如果能问业务方，你最想问的 5 个问题。</li>
+    <li><strong>页面与信息结构</strong>：这个系统有哪些页面、每个角色登录后第一眼看到什么、最常做的操作离入口有几步。至少给出核心页面的<strong>草图</strong>——手绘拍照、Excalidraw、Figma、甚至 ASCII 都可以，我们看的是你怎么组织信息，不是画得好不好。</li>
+    <li><strong>Part B 的选择理由</strong>：你为什么选这个切片来做。</li>
+  </ol>
+  <p class="note">可以把这份文档当成你交给产品和设计同事的东西：读完它，他们应该知道要做什么、为什么、长什么样。</p>
+
+  <h3>Part B · 一个能跑的垂直切片</h3>
+  <p>从你的设计里<strong>选一条完整的流程</strong>，从数据库到界面做通。比如（只是例子，不要被限制）：</p>
+  <ul>
+    <li>咨询 → 安排试听 → 试听后标记结果并跟进</li>
+    <li>把一个已报名学生排进每周班级，并正确处理时间冲突和课时</li>
+    <li>老师视角：今天要上的课、每个班的名单、记出勤并扣课时</li>
+    <li>admin 视角：我手上哪些学生试听完没跟进、哪些快要用完课时</li>
+  </ul>
+  <p>要求：</p>
+  <ul>
+    <li>真实的数据库、真实的后端、真实的前端，有登录和至少一层权限（比如 admin 可以查看所有学生，但只能修改自己的学生）</li>
+    <li>你在 DESIGN.md 里列出的规则，凡是这条流程涉及的，<strong>必须在服务端强制执行</strong>，展示时我们会绕过界面直接测</li>
+    <li>seed 脚本生成足够的数据，让这条流程能被演示（不需要真的 1000 个学生，但要能看出"一个 admin 管很多学生"的感觉）</li>
+    <li>基本的 loading / 空 / 错误状态</li>
+    <li><strong>一处用到 LLM 的地方</strong>，由你决定放在哪里最有价值。要求 structured output、服务端校验、失败时有合理降级。反例：为了用而用的"AI 聊天框"。</li>
+  </ul>
+  <p class="note">把这当作一次 hackathon：时间是固定的，范围由你控制。切片做窄一点、做透，好过做宽但每处都是半成品。</p>
+</section>
+
+<section>
+  <h2>3. 技术要求</h2>
+  <ul>
+    <li><strong>技术栈不限</strong>，用你最顺手的。用 <strong>React + TypeScript</strong> 会更好，因为这是我们的日常技术栈；用别的也可以，展示时我们会多问一些 React 相关的问题</li>
+    <li>后端语言、框架、ORM 不限</li>
+    <li>推荐关系型数据库，平台自选（Neon / Supabase / 本地 Docker / SQLite 都行），README 写清楚怎么跑起来</li>
+    <li>LLM 自备，任何 provider 或本地模型均可，调用量很小，免费额度足够。key 不要提交到仓库</li>
+    <li><strong>尽量部署</strong>并在 README 附上链接，让我们展示前就能自己点一点。Vercel、Netlify、Render、Cloudflare Pages / Workers 都有长期免费档，对这个作业都够用。实在没时间可以跳过，本地能跑起来即可</li>
+    <li>系统业务时间统一按 <code>Australia/Melbourne</code> 时区处理并展示，无需实现多时区切换</li>
+  </ul>
+</section>
+
+<section>
+  <h2>4. 我们怎么评估</h2>
+  <div class="callout">
+    <p><strong>思考质量 &gt; 切片是否做对做透 &gt; 代码你能解释清楚 &gt; 界面设计是否清晰合理 &gt; 技术栈匹配度</strong></p>
+  </div>
+  <table>
+    <tr><th style="width:24%">看什么</th><th>好的表现</th><th>不好的表现</th></tr>
+    <tr><td>理解业务</td><td>识别出背景里没明说但显然存在的东西（比如家长和学生不是同一个人、试听和正式课的区别、课时是钱）</td><td>把背景复述一遍，或者直接套一个通用 CRUD 模板</td></tr>
+    <tr><td>取舍</td><td>明确说"第一版不做 X，因为 Y"，并且 X 确实是可以后做的</td><td>什么都想做，或者砍掉的恰好是最核心的</td></tr>
+    <tr><td>数据模型</td><td>能应对"一个学生同时在两个班""课时怎么退"这类追问</td><td>只有几张表，字段没想过为什么存在</td></tr>
+    <tr><td>规则执行</td><td>规则在服务端，绕过前端也拦得住；知道哪些用数据库约束、哪些用业务逻辑</td><td>只在前端禁用了按钮</td></tr>
+    <tr><td>切片质量</td><td>选的流程完整、能演示、边界情况有处理</td><td>做了五个页面，每个都只能看不能操作</td></tr>
+    <tr><td>界面设计</td><td>页面数量克制，每个角色打开就能看到自己最关心的信息；状态一眼能区分</td><td>把每张表做成一个 CRUD 页面，用户要自己拼凑信息</td></tr>
+    <tr><td>AI 的使用</td><td>放在真正省人力的地方，失败了系统照常工作</td><td>为了有 AI 而加了个聊天框</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>5. 关于使用 AI 编程工具</h2>
+  <div class="warn">
+    <p>我们<strong>鼓励</strong>使用 Claude Code、Codex、Cursor 等工具写代码，也可以用它们帮你梳理需求。</p>
+    <p>但 DESIGN.md 里的判断必须是你自己的，代码的每一行你都需要能解释。展示时我们会追问"为什么"，AI 生成的方案如果你答不上来为什么，比不做更糟。</p>
+  </div>
+  <ul>
+    <li>保留完整 git 历史，不要 squash</li>
+    <li>README 里写一段：AI 工具用在了哪些环节、有没有哪些 AI 给的建议你没采纳以及为什么</li>
+  </ul>
+</section>
+
+<section>
+  <h2>6. 展示环节（约 45 分钟）</h2>
+  <table>
+    <tr><th style="width:26%">环节</th><th>内容</th></tr>
+    <tr><td>讲设计（10 分钟）</td><td>你怎么理解这个业务、为什么这样建模、页面为什么这样组织、为什么选这个切片。不要念文档，讲你的思路</td></tr>
+    <tr><td>追问（10 分钟）</td><td>我们会给一些你没考虑到的情况，看你怎么改。比如：一个学生转给另一个 admin 了怎么办？老师临时请假一周怎么办？</td></tr>
+    <tr><td>Demo + 破坏测试（10 分钟）</td><td>走一遍切片；然后我们会尝试绕过界面违反你的规则</td></tr>
+    <tr><td>Code walkthrough（10 分钟）</td><td>随机挑几处代码问为什么这样写、改成 X 会怎样</td></tr>
+    <tr><td>AI 工具（5 分钟）</td><td>怎么用的、git log、对 MCP / Skills 的理解</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>7. 常见问题</h2>
+  <table>
+    <tr><td style="width:36%"><strong>需求这么模糊，我该怎么开始？</strong></td><td>先把背景读三遍，把所有名词列出来，想清楚它们之间的关系，再决定先做什么。这个过程本身就是作业的一部分。</td></tr>
+    <tr><td><strong>可以问你们问题吗？</strong></td><td>可以。但不保证回答——有些问题我们故意留白。问不到答案的地方，自己做假设写进 DESIGN.md，比等待要好。</td></tr>
+    <tr><td><strong>可以用组件库 / 脚手架 / 模板吗？</strong></td><td>可以。我们看的是你的判断和实现，不是从零手写 UI。</td></tr>
+    <tr><td><strong>做不完怎么办？</strong></td><td>DESIGN.md 先保证完整，切片可以做得更窄。展示时说明你砍了什么、为什么，这本身就是我们想听的。</td></tr>
+    <tr><td><strong>需要一直做满 24 小时吗？</strong></td><td>不需要，也不希望你这样。我们的要求是：<strong>从 <code>git init</code> 到最后一个 commit 不超过 10 小时</strong>。准备好开始时，第一件事就是 <code>git init</code>、把仓库设为 public、把链接发邮件给我们；之后什么时候做、怎么安排休息都由你决定。我们会看首次和末次 commit 的时间，这是为了让大家在同样的时间预算下比较，不是为了制造压力。</td></tr>
+  </table>
+</section>
+
+</div>
+</body>
+</html>

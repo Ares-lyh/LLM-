@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-server/
+data/*.db
+data/*.db-*
+.env
+.env.*
+!.env.example
+.npm-cache/
+.dev-checkpoint.json
