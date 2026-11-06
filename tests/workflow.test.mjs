@@ -123,7 +123,7 @@ test('existing databases gain history tables without changing their students', (
   assert.equal(spawnSync(process.execPath, ['dist-server/server/seed.js'], { env, encoding: 'utf8' }).status, 0);
   const old = new DatabaseSync(legacyPath);
   const count = old.prepare('SELECT COUNT(*) AS count FROM students').get().count;
-  old.exec('DROP TABLE inquiry_requests; DROP TABLE trial_cancellations; DROP TABLE trial_reschedules; DROP TABLE trial_teachers; DROP TABLE teacher_assignments;');
+  old.exec('DROP TABLE trial_feedback; DROP TABLE inquiry_requests; DROP TABLE trial_cancellations; DROP TABLE trial_reschedules; DROP TABLE trial_teachers; DROP TABLE teacher_assignments;');
   old.close();
   const upgraded = spawnSync(process.execPath, ['dist-server/server/seed.js'], { env, encoding: 'utf8' });
   assert.equal(upgraded.status, 0, upgraded.stderr);
@@ -132,6 +132,7 @@ test('existing databases gain history tables without changing their students', (
   assert.equal(check.prepare('SELECT COUNT(*) AS count FROM students').get().count, count);
   assert.equal(check.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN ('teacher_assignments', 'trial_teachers', 'trial_reschedules')").get().count, 3);
   assert.equal(check.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version = '20261105_teacher_and_trial_history'").get().count, 1);
+  assert.equal(check.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'trial_feedback'").get().count, 1);
   assert.equal(check.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN ('trial_cancellations', 'inquiry_requests')").get().count, 2);
   check.close();
 });

@@ -5,6 +5,7 @@ import { clearSession, clearSessionCookie, createSession, getSessionUser, hashPa
 import { db, id, nowIso } from './db.js';
 import { assignTeacher, cancelTrial, currentTeacher, rescheduleTrial, setTeacher, teacherExists } from './scheduling.js';
 import { createReturningInquiry } from './student-workflow.js';
+import { teacherDashboard, teacherTrials, teacherStudents, teacherStudentDetail } from './teaching.js';
 import type { CompleteFollowUpInput, CompleteTrialInput, CreateLeadInput, DashboardDto, FollowUpOutcome, FollowUpStatus, InquiryDto, InquiryStatus, ScheduleTrialInput, TrialDto, TrialOutcome, TrialStatus } from '../src/shared/contracts.js';
 
 const port = Number(process.env.PORT ?? 3001);
@@ -99,6 +100,8 @@ function mapTrial(row: Record<string, unknown>) {
     outcome: row.outcome ? String(row.outcome) as TrialOutcome : null,
     notes: row.notes ? String(row.notes) : null,
     teacherName: row.teacher_name ? String(row.teacher_name) : null,
+    completedByName: row.completed_by_name ? String(row.completed_by_name) : null,
+    completedAt: row.completed_at ? String(row.completed_at) : null,
   };
 }
 
@@ -253,6 +256,26 @@ async function route(req: IncomingMessage, res: ServerResponse) {
     return user ? sendJson(res, 200, { user: { id: user.id, name: user.name, email: user.email, role: user.role } }) : sendError(res, 401, 'AUTH_REQUIRED', '请先登录');
   }
 
+  if (path.startsWith('/api/teacher/')) {
+    const user = requireAuth(req, res);
+    if (!user) return;
+    if (user.role !== 'teacher') return sendError(res, 403, 'FORBIDDEN', '此入口仅供教师使用');
+    if (req.method === 'GET' && path === '/api/teacher/dashboard') return sendJson(res, 200, teacherDashboard(user.id));
+    if (req.method === 'GET' && path === '/api/teacher/trials') {
+      const result = teacherTrials(user.id, url);
+      return sendJson(res, result.status, result.body);
+    }
+    if (req.method === 'GET' && path === '/api/teacher/students') {
+      const result = teacherStudents(user.id, url);
+      return sendJson(res, result.status, result.body);
+    }
+    const detail = path.match(/^\/api\/teacher\/students\/([^/]+)$/);
+    if (req.method === 'GET' && detail) {
+      const result = teacherStudentDetail(user.id, detail[1]);
+      return sendJson(res, result.status, result.body);
+    }
+  }
+
   if (req.method === 'GET' && path === '/api/dashboard') {
     const user = requireAdmin(req, res);
     return user ? sendJson(res, 200, dashboard(user.id)) : undefined;
@@ -352,7 +375,7 @@ async function route(req: IncomingMessage, res: ServerResponse) {
     if (!student) return sendError(res, 404, 'STUDENT_NOT_FOUND', '学生不存在');
     if (String(student.owner_id) !== user.id) return sendError(res, 403, 'FORBIDDEN', '只能查看自己负责的学生详情');
     const inquiries = db.prepare('SELECT i.*, s.name AS student_name FROM inquiries i JOIN students s ON s.id = i.student_id WHERE s.id = ? ORDER BY i.created_at DESC').all(studentMatch[1]).map((row) => mapInquiry(row as Record<string, unknown>));
-    const trials = db.prepare('SELECT t.*, s.name AS student_name, u.name AS teacher_name FROM trial_lessons t JOIN students s ON s.id = t.student_id LEFT JOIN trial_teachers tt ON tt.trial_id = t.id LEFT JOIN users u ON u.id = tt.teacher_id WHERE s.id = ? ORDER BY t.scheduled_at DESC').all(studentMatch[1]).map((row) => mapTrial(row as Record<string, unknown>));
+    const trials = db.prepare('SELECT t.*, s.name AS student_name, u.name AS teacher_name, actor.name AS completed_by_name, f.completed_at FROM trial_lessons t JOIN students s ON s.id = t.student_id LEFT JOIN trial_teachers tt ON tt.trial_id = t.id LEFT JOIN users u ON u.id = tt.teacher_id LEFT JOIN trial_feedback f ON f.trial_id = t.id LEFT JOIN users actor ON actor.id = f.completed_by WHERE s.id = ? ORDER BY t.scheduled_at DESC').all(studentMatch[1]).map((row) => mapTrial(row as Record<string, unknown>));
     const followUps = db.prepare('SELECT f.*, s.name AS student_name, r.notes AS result_note, r.outcome AS result_outcome FROM follow_ups f JOIN students s ON s.id = f.student_id LEFT JOIN follow_up_results r ON r.follow_up_id = f.id WHERE s.id = ? ORDER BY f.created_at DESC').all(studentMatch[1]).map((row) => mapFollowUp(row as Record<string, unknown>));
     const teacherHistory = db.prepare('SELECT a.teacher_id AS teacherId, t.name AS teacherName, a.assigned_at AS assignedAt, u.name AS assignedByName FROM teacher_assignments a JOIN users t ON t.id = a.teacher_id JOIN users u ON u.id = a.assigned_by WHERE a.student_id = ? ORDER BY a.rowid').all(studentMatch[1]);
     const trialReschedules = db.prepare('SELECT r.trial_id AS trialId, r.previous_scheduled_at AS previousScheduledAt, r.scheduled_at AS scheduledAt, r.reason, r.changed_at AS changedAt, u.name AS changedByName FROM trial_reschedules r JOIN trial_lessons t ON t.id = r.trial_id JOIN users u ON u.id = r.changed_by WHERE t.student_id = ? ORDER BY r.rowid').all(studentMatch[1]);
@@ -502,7 +525,7 @@ async function route(req: IncomingMessage, res: ServerResponse) {
 
   const trialCompleteMatch = path.match(/^\/api\/trials\/([^/]+)\/complete$/);
   if (req.method === 'POST' && trialCompleteMatch) {
-    const user = requireAdmin(req, res);
+    const user = requireAuth(req, res);
     if (!user) return;
     try {
       const trialId = trialCompleteMatch[1];
@@ -511,20 +534,32 @@ async function route(req: IncomingMessage, res: ServerResponse) {
       if (!['interested', 'undecided', 'not_interested'].includes(String(outcome))) throw new Error('INVALID_OUTCOME');
       const selectedOutcome = outcome as TrialOutcome;
       const notes = asNonEmptyString(body.notes, 'notes');
-      const trial = db.prepare('SELECT t.*, s.owner_id FROM trial_lessons t JOIN students s ON s.id = t.student_id WHERE t.id = ?').get(trialId) as Record<string, unknown> | undefined;
+      if (notes.length > 2000) throw new Error('INVALID_NOTES');
+      const trial = db.prepare('SELECT t.*, s.owner_id, tt.teacher_id FROM trial_lessons t JOIN students s ON s.id = t.student_id LEFT JOIN trial_teachers tt ON tt.trial_id = t.id WHERE t.id = ?').get(trialId) as Record<string, unknown> | undefined;
       if (!trial) return sendError(res, 404, 'TRIAL_NOT_FOUND', '试听记录不存在');
-      if (String(trial.owner_id) !== user.id) return sendError(res, 403, 'FORBIDDEN', '只能操作自己负责的学生');
+      const isTeacher = user.role === 'teacher';
+      if (isTeacher ? trial.teacher_id !== user.id : trial.owner_id !== user.id) return sendError(res, 403, 'FORBIDDEN', '只能提交自己负责的试听结果');
       if (String(trial.status) !== 'scheduled') return sendError(res, 409, 'TRIAL_ALREADY_COMPLETED', '该试听已处理');
+      if (isTeacher && String(trial.scheduled_at) > nowIso()) return sendError(res, 409, 'TRIAL_NOT_STARTED', '试听尚未开始，请上课后提交反馈');
+      if (isTeacher && body.followUpDueAt !== undefined) throw new Error('INVALID_FOLLOW_UP_PERMISSION');
+      const expectedTime = body.expectedScheduledAt === undefined ? null : asDate(body.expectedScheduledAt, 'expectedScheduledAt');
+      if (isTeacher && !expectedTime) throw new Error('INVALID_EXPECTED_TIME');
+      if (expectedTime && expectedTime !== trial.scheduled_at) return sendError(res, 409, 'TRIAL_CHANGED', '试听已改期，请刷新后重新填写反馈');
+      const dueAt = body.followUpDueAt ? asDate(body.followUpDueAt, 'followUpDueAt') : new Date(Date.now() + (selectedOutcome === 'interested' ? 2 : 3) * 86_400_000).toISOString();
       const aiSummary = selectedOutcome === 'not_interested' ? '' : await generateAiSummary({ outcome: selectedOutcome, notes });
       const now = nowIso();
-      const dueAt = body.followUpDueAt ? asDate(body.followUpDueAt, 'followUpDueAt') : new Date(Date.now() + (selectedOutcome === 'interested' ? 2 : 3) * 86_400_000).toISOString();
       db.exec('BEGIN IMMEDIATE');
       try {
-        const updated = db.prepare("UPDATE trial_lessons SET status = ?, outcome = ?, notes = ? WHERE id = ? AND status = 'scheduled' AND scheduled_at = ?").run('completed', selectedOutcome, notes, trialId, String(trial.scheduled_at));
+        const updated = db.prepare(`UPDATE trial_lessons SET status = ?, outcome = ?, notes = ?
+          WHERE id = ? AND status = 'scheduled' AND scheduled_at = ?
+          AND EXISTS (SELECT 1 FROM students s WHERE s.id = trial_lessons.student_id AND s.owner_id = ?)
+          AND (? = 0 OR EXISTS (SELECT 1 FROM trial_teachers tt WHERE tt.trial_id = trial_lessons.id AND tt.teacher_id = ?))`)
+          .run('completed', selectedOutcome, notes, trialId, String(trial.scheduled_at), String(trial.owner_id), isTeacher ? 1 : 0, user.id);
         if (Number(updated.changes) !== 1) {
           db.exec('ROLLBACK');
           return sendError(res, 409, 'TRIAL_CHANGED', '试听已改期或处理，请刷新后重试');
         }
+        db.prepare('INSERT INTO trial_feedback (trial_id, completed_by, completed_at) VALUES (?, ?, ?)').run(trialId, user.id, now);
         db.prepare("UPDATE inquiries SET status = ?, updated_at = ? WHERE id = ?").run(selectedOutcome === 'not_interested' ? 'lost' : 'contacted', now, String(trial.inquiry_id));
         db.prepare('UPDATE students SET status = ? WHERE id = ?').run(selectedOutcome === 'not_interested' ? 'lost' : 'trial', String(trial.student_id));
         if (selectedOutcome === 'not_interested') {

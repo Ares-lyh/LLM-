@@ -49,6 +49,40 @@ export interface TrialDto {
   outcome: TrialOutcome | null;
   notes: string | null;
   teacherName: string | null;
+  completedByName?: string | null;
+  completedAt?: string | null;
+}
+
+export type TeacherTrialFilter = 'all' | 'today' | 'upcoming' | 'pending' | 'completed' | 'cancelled';
+
+export interface TeacherTrialDto extends TrialDto {
+  ownerName: string;
+  learningGoal: string;
+}
+
+export interface TeacherDashboardDto {
+  counts: { students: number; todayTrials: number; pendingFeedback: number; completedTrials: number };
+  nextTrials: TeacherTrialDto[];
+}
+
+export interface TeacherStudentDto {
+  id: string;
+  name: string;
+  ownerName: string;
+  learningGoal: string;
+}
+
+export interface TeacherStudentDetailDto {
+  student: TeacherStudentDto;
+  trials: TeacherTrialDto[];
+}
+
+export interface TeacherPageDto<T> {
+  items: T[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
 }
 
 export interface TeacherAssignmentDto {
@@ -181,6 +215,7 @@ export interface CompleteTrialInput {
   outcome: TrialOutcome;
   notes: string;
   followUpDueAt?: string;
+  expectedScheduledAt?: string;
 }
 
 export interface CompleteFollowUpInput {

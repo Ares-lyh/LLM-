@@ -98,6 +98,12 @@ export function migrate() {
     CREATE TABLE IF NOT EXISTS trial_teachers (
       trial_id TEXT PRIMARY KEY REFERENCES trial_lessons(id), teacher_id TEXT NOT NULL REFERENCES users(id)
     );
+    CREATE INDEX IF NOT EXISTS idx_trial_teachers_teacher ON trial_teachers(teacher_id, trial_id);
+    CREATE INDEX IF NOT EXISTS idx_teacher_assignments_active ON teacher_assignments(teacher_id, student_id) WHERE ended_at IS NULL;
+    CREATE TABLE IF NOT EXISTS trial_feedback (
+      trial_id TEXT PRIMARY KEY REFERENCES trial_lessons(id),
+      completed_by TEXT NOT NULL REFERENCES users(id), completed_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS trial_reschedules (
       id TEXT PRIMARY KEY, trial_id TEXT NOT NULL REFERENCES trial_lessons(id),
       previous_scheduled_at TEXT NOT NULL, scheduled_at TEXT NOT NULL, reason TEXT NOT NULL,
@@ -107,6 +113,8 @@ export function migrate() {
     CREATE TABLE IF NOT EXISTS schema_migrations (
       version TEXT PRIMARY KEY, applied_at TEXT NOT NULL
     );
+    INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+      VALUES ('20261106_teacher_workspace', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
     INSERT OR IGNORE INTO schema_migrations (version, applied_at)
       VALUES ('20261105_teacher_and_trial_history', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
     CREATE TABLE IF NOT EXISTS trial_cancellations (

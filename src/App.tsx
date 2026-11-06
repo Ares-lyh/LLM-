@@ -1,7 +1,9 @@
-import { FormEvent, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { melbourneLocalToInstant } from './shared/time';
 import { CreateTeacherForm, RescheduleForm, TeacherAssignment, TeacherSelector } from './Scheduling';
 import { CancelTrialForm, ReturningInquiryForm, StudentEditForm } from './StudentOperations';
+import { Dialog } from './Dialog';
+import { TeacherWorkspace } from './TeacherWorkspace';
 import { buildWorkspaceUrl, readWorkspaceNavigation, type StudentDirectoryStatus, type TaskFilter, type WorkspaceNavigation, type WorkspaceView } from './shared/navigation';
 import type { CompleteTrialInput, DashboardDto, DuplicateStudentDto, FollowUpDto, FollowUpOutcome, InquiryDto, StudentDetailDto, StudentDirectoryDto, TrialDto, UserDto } from './shared/contracts';
 
@@ -69,6 +71,8 @@ export function App() {
   const [dashboard, setDashboard] = useState<DashboardDto | null>(null);
   const [login, setLogin] = useState(initialLogin);
   const [loginError, setLoginError] = useState('');
+  const [loginSaving, setLoginSaving] = useState(false);
+  const loginPending = useRef(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -131,7 +135,8 @@ export function App() {
   useEffect(() => {
     api<{ user: UserDto }>('/api/auth/me').then(({ user: me }) => {
       setUser(me);
-      return loadDashboard();
+      if (me.role === 'admin') return loadDashboard();
+      setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
 
@@ -143,13 +148,19 @@ export function App() {
 
   async function submitLogin(event: FormEvent) {
     event.preventDefault();
+    if (loginPending.current) return;
+    loginPending.current = true;
+    setLoginSaving(true);
     setLoginError('');
     try {
       const result = await api<{ user: UserDto }>('/api/auth/login', { method: 'POST', body: JSON.stringify(login) });
       setUser(result.user);
-      await loadDashboard();
+      if (result.user.role === 'admin') await loadDashboard();
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : '登录失败');
+    } finally {
+      loginPending.current = false;
+      setLoginSaving(false);
     }
   }
 
@@ -157,10 +168,13 @@ export function App() {
     await api('/api/auth/logout', { method: 'POST' });
     setUser(null);
     setDashboard(null);
+    setDialog(null);
+    setToast('');
   }
 
   if (loading) return <DashboardSkeleton />;
-  if (!user) return <LoginPage login={login} setLogin={setLogin} error={loginError} onSubmit={submitLogin} />;
+  if (!user) return <LoginPage login={login} setLogin={setLogin} error={loginError} saving={loginSaving} onSubmit={submitLogin} />;
+  if (user.role === 'teacher') return <TeacherWorkspace api={api} user={user} onLogout={logout} onSessionExpired={() => setUser(null)} />;
   if (!dashboard) return <div className="center-state"><strong>工作台暂时无法加载</strong><span>{loadError}</span><button className="secondary-button" onClick={refreshDashboard}>重试</button></div>;
 
   const pending = dashboard?.followUps.filter((item) => item.status === 'pending') ?? [];
@@ -329,8 +343,8 @@ function statusLabel(value: InquiryDto['status']) {
   return ({ new: '新咨询', contacted: '已联系', trial_scheduled: '已安排试听', converted: '有报名意向', lost: '已流失' } as Record<InquiryDto['status'], string>)[value];
 }
 
-function LoginPage({ login, setLogin, error, onSubmit }: { login: LoginState; setLogin: (state: LoginState) => void; error: string; onSubmit: (event: FormEvent) => void }) {
-  return <div className="login-shell"><div className="login-art"><div className="art-orbit orbit-one" /><div className="art-orbit orbit-two" /><div className="art-copy"><span className="brand-mark">N</span><p>Make every student<br /><strong>move forward.</strong></p><small>Student operations, with a clearer next step.</small></div><div className="art-note note-one">01 <span>咨询</span></div><div className="art-note note-two">02 <span>试听</span></div><div className="art-note note-three">03 <span>跟进</span></div></div><div className="login-card"><div className="login-brand"><span className="brand-mark">N</span><strong>northstar</strong></div><div className="login-heading"><p className="section-kicker">WELCOME BACK</p><h1>进入你的工作台</h1><p>把每一个学生的下一步，照亮。</p></div><form onSubmit={onSubmit}><label>工作邮箱<input type="email" value={login.email} onChange={(e) => setLogin({ ...login, email: e.target.value })} autoComplete="email" /></label><label>密码<input type="password" value={login.password} onChange={(e) => setLogin({ ...login, password: e.target.value })} autoComplete="current-password" /></label>{error && <div className="form-error">{error}</div>}<button className="primary-button full" type="submit">进入工作台 <span>→</span></button></form><p className="login-hint">演示账号：amy@austin.edu · demo123</p></div></div>;
+function LoginPage({ login, setLogin, error, saving, onSubmit }: { login: LoginState; setLogin: (state: LoginState) => void; error: string; saving: boolean; onSubmit: (event: FormEvent) => void }) {
+  return <div className="login-shell"><div className="login-art"><div className="art-orbit orbit-one" /><div className="art-orbit orbit-two" /><div className="art-copy"><span className="brand-mark">N</span><p>Make every student<br /><strong>move forward.</strong></p><small>Student operations, with a clearer next step.</small></div><div className="art-note note-one">01 <span>咨询</span></div><div className="art-note note-two">02 <span>试听</span></div><div className="art-note note-three">03 <span>跟进</span></div></div><div className="login-card"><div className="login-brand"><span className="brand-mark">N</span><strong>northstar</strong></div><div className="login-heading"><p className="section-kicker">WELCOME BACK</p><h1>进入你的工作台</h1><p>把每一个学生的下一步，照亮。</p></div><form onSubmit={onSubmit}><label>工作邮箱<input type="email" value={login.email} onChange={(e) => setLogin({ ...login, email: e.target.value })} autoComplete="email" /></label><label>密码<input type="password" value={login.password} onChange={(e) => setLogin({ ...login, password: e.target.value })} autoComplete="current-password" /></label>{error && <div className="form-error">{error}</div>}<button className="primary-button full" type="submit" disabled={saving}>{saving ? '登录中…' : '进入工作台'} <span>→</span></button></form><p className="login-hint">演示账号按角色进入对应工作台（仅供本机演示）</p><div className="login-demo-actions"><button type="button" className="secondary-button" disabled={saving} onClick={() => setLogin(initialLogin)}>填入管理员账号</button><button type="button" className="secondary-button" disabled={saving} onClick={() => setLogin({ email: 'teacher@austin.edu', password: 'teacher-demo123' })}>填入教师账号</button></div></div></div>;
 }
 
 function Metric({ label, value, detail, tone, icon }: { label: string; value: number | string; detail: string; tone: string; icon: string }) { return <div className={`metric-card tone-${tone}`}><div className="metric-top"><span>{label}</span><i>{icon}</i></div><strong>{value}</strong><small>{detail}</small></div>; }
@@ -418,7 +432,7 @@ function LeadDialog({ onClose, onCreated }: { onClose: () => void; onCreated: ()
   </Dialog>;
 }
 function TrialDialog({ trial, onClose, onCreated }: { trial: TrialDto; onClose: () => void; onCreated: () => void }) { const [scheduledAt, setScheduledAt] = useState(''); const [teacherId, setTeacherId] = useState(''); const [error, setError] = useState(''); const [saving, setSaving] = useState(false); async function submit(event: FormEvent) { event.preventDefault(); setSaving(true); try { const instant = melbourneLocalToInstant(scheduledAt); await api(`/api/inquiries/${trial.inquiryId}/trial`, { method: 'POST', body: JSON.stringify({ scheduledAt: instant, ...(teacherId ? { teacherId } : {}) }) }); onCreated(); } catch (error) { setError(error instanceof RangeError ? '该时间因夏令时不存在或有歧义，请选择其他时间' : error instanceof Error ? error.message : '安排失败'); } finally { setSaving(false); } } return <Dialog title={`为 ${trial.studentName} 安排试听`} eyebrow="SCHEDULE TRIAL" onClose={onClose}><form className="dialog-form" onSubmit={submit}><label>试听时间（墨尔本）<input required type="datetime-local" value={scheduledAt} onChange={(e) => setScheduledAt(e.target.value)} /></label><TeacherSelector api={api} value={teacherId} onChange={setTeacherId} placeholder="沿用已分配老师（若有）" />{error && <div className="form-error">{error}</div>}<div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={saving}>{saving ? '保存中…' : '确认安排'}</button></div></form></Dialog>; }
-function ResultDialog({ trial, onClose, onCreated }: { trial: TrialDto; onClose: () => void; onCreated: (message: string) => void }) { const [form, setForm] = useState<CompleteTrialInput>({ outcome: 'interested', notes: '' }); const [error, setError] = useState(''); const [saving, setSaving] = useState(false); async function submit(event: FormEvent) { event.preventDefault(); setSaving(true); try { const result = await api<{ aiSummary: string }>(`/api/trials/${trial.id}/complete`, { method: 'POST', body: JSON.stringify(form) }); onCreated(`试听结果已保存 · ${result.aiSummary}`); } catch (error) { setError(error instanceof Error ? error.message : '保存失败'); } finally { setSaving(false); } } return <Dialog title={`记录 ${trial.studentName} 的试听结果`} eyebrow="TRIAL OUTCOME" onClose={onClose}><form className="dialog-form" onSubmit={submit}><fieldset><legend>学生意向</legend><div className="choice-grid">{([['interested', '有兴趣', '适合进入报名跟进'], ['undecided', '再考虑', '需要一次回访'], ['not_interested', '暂不考虑', '结束当前线索']] as const).map(([value, label, hint]) => <label className={`choice ${form.outcome === value ? 'selected' : ''}`} key={value}><input type="radio" name="outcome" checked={form.outcome === value} onChange={() => setForm({ ...form, outcome: value })} /><strong>{label}</strong><small>{hint}</small></label>)}</div></fieldset><label>课堂备注<textarea required value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="学生的表现、家长反馈、下一步建议…" rows={5} /></label><p className="ai-hint">✦ 保存后会生成一条结构化跟进建议，AI 不可用时会自动使用规则化建议。</p>{error && <div className="form-error">{error}</div>}<div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={saving}>{saving ? '分析中…' : '保存试听结果'}</button></div></form></Dialog>; }
+function ResultDialog({ trial, onClose, onCreated }: { trial: TrialDto; onClose: () => void; onCreated: (message: string) => void }) { const [form, setForm] = useState<CompleteTrialInput>({ outcome: 'interested', notes: '', expectedScheduledAt: trial.scheduledAt }); const [error, setError] = useState(''); const [saving, setSaving] = useState(false); async function submit(event: FormEvent) { event.preventDefault(); setSaving(true); try { const result = await api<{ aiSummary: string }>(`/api/trials/${trial.id}/complete`, { method: 'POST', body: JSON.stringify(form) }); onCreated(`试听结果已保存 · ${result.aiSummary}`); } catch (error) { setError(error instanceof Error ? error.message : '保存失败'); } finally { setSaving(false); } } return <Dialog title={`记录 ${trial.studentName} 的试听结果`} eyebrow="TRIAL OUTCOME" onClose={onClose}><form className="dialog-form" onSubmit={submit}><fieldset><legend>学生意向</legend><div className="choice-grid">{([['interested', '有兴趣', '适合进入报名跟进'], ['undecided', '再考虑', '需要一次回访'], ['not_interested', '暂不考虑', '结束当前线索']] as const).map(([value, label, hint]) => <label className={`choice ${form.outcome === value ? 'selected' : ''}`} key={value}><input type="radio" name="outcome" checked={form.outcome === value} onChange={() => setForm({ ...form, outcome: value })} /><strong>{label}</strong><small>{hint}</small></label>)}</div></fieldset><label>课堂备注<textarea required maxLength={2000} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="学生的表现、家长反馈、下一步建议…" rows={5} /></label><p className="ai-hint">✦ 保存后会生成一条结构化跟进建议，AI 不可用时会自动使用规则化建议。</p>{error && <div className="form-error">{error}</div>}<div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={saving}>{saving ? '分析中…' : '保存试听结果'}</button></div></form></Dialog>; }
 function FollowUpDialog({ item, onClose, onCreated }: { item: FollowUpDto; onClose: () => void; onCreated: () => void }) {
   const [notes, setNotes] = useState('');
   const [outcome, setOutcome] = useState<FollowUpOutcome>('continue');
@@ -472,17 +486,8 @@ function StudentDialog({ id, onClose, onChanged }: { id: string; onClose: () => 
       <h3>负责老师：{detail.student.teacherName ?? '暂未分配'}</h3><TeacherAssignment key={`${id}-${detail.student.teacherId ?? ''}`} api={api} detail={detail} onSaved={() => setAttempt((n) => n + 1)} />
       {detail.teacherHistory.map((item, index) => <div className="history-row" key={`${item.teacherId}-${index}`}><strong>{item.teacherName}</strong><small>{formatDate(item.assignedAt)} · {item.assignedByName} 分配</small></div>)}
       <h3>咨询记录</h3>{detail.inquiries.length ? detail.inquiries.map((inquiry) => <div className="history-row" key={inquiry.id}><strong>{inquiry.channel} · {formatDate(inquiry.createdAt)}</strong><p>{inquiry.summary}</p></div>) : <p>暂无咨询记录</p>}
-      <h3>试听记录</h3>{detail.trials.length ? detail.trials.map((trial) => <div className="history-row" key={trial.id}><strong>{formatDate(trial.scheduledAt)} · {trial.status === 'completed' ? '已完成' : trial.status === 'scheduled' ? '已安排' : '已取消'}</strong><small>试听老师：{trial.teacherName ?? '未记录'}</small>{trial.notes && <p>{trial.notes}</p>}{detail.trialReschedules.filter((change) => change.trialId === trial.id).map((change, index) => <p key={index}>改期：{formatDate(change.previousScheduledAt)} → {formatDate(change.scheduledAt)} · {change.reason}<small>{formatDate(change.changedAt)} · {change.changedByName}</small></p>)}{detail.trialCancellations.filter((item) => item.trialId === trial.id).map((item) => <p key={item.trialId}>取消原因：{item.reason}<small>{formatDate(item.cancelledAt)} · {item.cancelledByName}</small></p>)}</div>) : <p>暂无试听记录</p>}
+      <h3>试听记录</h3>{detail.trials.length ? detail.trials.map((trial) => <div className="history-row" key={trial.id}><strong>{formatDate(trial.scheduledAt)} · {trial.status === 'completed' ? '已完成' : trial.status === 'scheduled' ? '已安排' : '已取消'}</strong><small>试听老师：{trial.teacherName ?? '未记录'}</small>{trial.notes && <p>{trial.notes}</p>}{trial.completedAt && <small>反馈提交：{trial.completedByName} · {formatDate(trial.completedAt)}</small>}{detail.trialReschedules.filter((change) => change.trialId === trial.id).map((change, index) => <p key={index}>改期：{formatDate(change.previousScheduledAt)} → {formatDate(change.scheduledAt)} · {change.reason}<small>{formatDate(change.changedAt)} · {change.changedByName}</small></p>)}{detail.trialCancellations.filter((item) => item.trialId === trial.id).map((item) => <p key={item.trialId}>取消原因：{item.reason}<small>{formatDate(item.cancelledAt)} · {item.cancelledByName}</small></p>)}</div>) : <p>暂无试听记录</p>}
       <h3>跟进记录</h3>{detail.followUps.length ? detail.followUps.map((followUp) => <div className="history-row" key={followUp.id}><strong>{formatDate(followUp.dueAt)} · {followUp.status === 'pending' ? '待跟进' : followUp.status === 'completed' ? '已完成' : '已关闭'}</strong><p>{followUp.resultNote ?? followUp.note}</p>{followUp.resultOutcome && <small>{({ continue: '继续跟进', converted: '有报名意向', lost: '暂不报名' })[followUp.resultOutcome]}</small>}</div>) : <p>暂无跟进记录</p>}
     </div>}
   </Dialog>;
-}
-
-function Dialog({ title, eyebrow, onClose, children }: { title: string; eyebrow: string; onClose: () => void; children: ReactNode }) {
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
-  return <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><div className="dialog" role="dialog" aria-modal="true" aria-label={title}><div className="dialog-heading"><div><p className="section-kicker">{eyebrow}</p><h2>{title}</h2></div><button type="button" className="close-button" aria-label="关闭" onClick={onClose}>×</button></div>{children}</div></div>;
 }

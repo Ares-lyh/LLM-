@@ -12,7 +12,8 @@
 
 ### 本次实现
 
-- admin 登录、会话和角色权限。
+- admin / teacher 登录、会话和角色权限，按角色进入对应工作台。
+- 教师查询当前负责学生、试听安排与个人试听历史，按授课快照提交课后反馈，驱动管理员跟进，并记录提交人及时间。
 - 管理员创建老师账号；学生可以暂不分配老师，指定或更换老师时保留分配历史，试听保留当时的老师。
 - 试听改期保留原时间、新时间、原因及操作人，并通过原时间检查避免覆盖其他修改。
 - 管理员可取消试听并记录原因；取消后保留试听历史，咨询回到可继续跟进的状态。
@@ -37,12 +38,13 @@
 
 | 实体 | 关键字段 | 关系与说明 |
 | --- | --- | --- |
-| `users` | `id`, `email`, `name`, `role`, `password_hash` | 一个 admin 可拥有多个学生；teacher 角色为后续只读/授课入口预留 |
+| `users` | `id`, `email`, `name`, `role`, `password_hash` | 一个 admin 可拥有多个学生；teacher 通过当前分配查看学生、通过试听授课快照访问自己的试听并提交反馈 |
 | `students` | `id`, `name`, `guardian_name`, `guardian_phone`, `owner_id`, `status` | 学生是主实体；`owner_id` 表示当前负责的 admin |
 | `inquiries` | `id`, `student_id`, `owner_id`, `channel`, `summary`, `status` | 一个学生可以有多次咨询记录，但只有一个当前跟进状态 |
 | `trial_lessons` | `id`, `student_id`, `inquiry_id`, `scheduled_at`, `status`, `outcome`, `notes` | 试听属于一次咨询；完成试听后记录结果 |
 | `follow_ups` | `id`, `student_id`, `inquiry_id`, `due_at`, `status`, `note`, `ai_summary` | 待办；完成试听时按结果自动生成 |
 | `follow_up_results` | `follow_up_id`, `notes`, `outcome`, `created_at` | 每个已完成待办的一条沟通记录；继续跟进时创建下一条待办 |
+| `trial_feedback` | `trial_id`, `completed_by`, `completed_at` | 试听反馈操作人及时间，与试听完成和跟进创建同事务写入 |
 | `sessions` | `token`, `user_id`, `expires_at` | 数据库会话，退出登录立即失效 |
 
 未来增加 `enrollments(student_id, class_id, start_date, end_date)` 表示学生与固定班的多对多关系；`classes(teacher_id, weekday, local_start, duration)` 是每周班级规则，`class_sessions(class_id, start_at, teacher_id, status)` 是某一天实际发生或取消的课。`course_packages(student_id, purchased_units)` 保存购买记录，`attendance_records(session_id, student_id, status)` 保存出勤；`lesson_ledger(package_id, attendance_id, amount, reversal_of)` 记录正负课时流水，退款或撤销通过关联原流水的反向分录实现，余额由流水汇总。具体扣课、退款和跨包规则需业务确认。
@@ -71,7 +73,7 @@
 - **试听结果弹窗**：结果、课堂备注；提交后显示自动生成的跟进建议，跟进日期按意向默认计算。
 - **跟进弹窗**：记录沟通内容、结果及下次联系时间；详情中保留历史记录。
 - **错误、空、加载状态**：工作台加载提示、空队列引导、内联重试；目录更新失败保留已有列表并暂停导出，保存业务数据后刷新目录；查询变化或关闭学生详情时取消过期请求。表单写入动作显示提交中并防止重复点击。
-- **教师首屏（设计，未实现）**：按墨尔本当天显示授课时段、班级名单和新生标记；点击课程进入出勤及课堂反馈。
+- **教师工作台（已实现）**：教学概览、我的试听、我的学生；按墨尔本当天、即将开始、待反馈、完成和取消筛选，支持分页搜索、学习目标和个人试听历史。课后反馈记录表现与意向，驱动负责顾问的待办。换老师后保留原试听教师的历史权限，教师仅查看必要教学资料。固定班级与出勤仍未实现。
 
 核心操作距离：新建咨询 1 步；从待办安排试听 1 步；记录试听结果 1 步；完成跟进 1 步。
 
